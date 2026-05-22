@@ -367,7 +367,8 @@ output {
   transform: translateX(20px);
 }
 
-#captureVideo {
+#captureVideo,
+#cameraVideo {
   position: fixed;
   width: 1px;
   height: 1px;

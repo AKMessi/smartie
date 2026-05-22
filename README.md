@@ -19,6 +19,7 @@ master feature toggle.
   - Click/moment pulse
   - Idle wide shot
 - Microphone capture support.
+- Optional mirrored webcam bubble with selectable corner placement.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
 - Global recorder shortcuts with Wayland portal support where available.

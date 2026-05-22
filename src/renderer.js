@@ -1,6 +1,7 @@
 const canvas = document.querySelector('#previewCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 const video = document.querySelector('#captureVideo');
+const cameraVideo = document.querySelector('#cameraVideo');
 
 const elements = {
   sourceList: document.querySelector('#sourceList'),
@@ -27,6 +28,8 @@ const elements = {
   fps: document.querySelector('#fps'),
   fpsValue: document.querySelector('#fpsValue'),
   microphone: document.querySelector('#microphone'),
+  cameraBubble: document.querySelector('#cameraBubble'),
+  cameraPosition: document.querySelector('#cameraPosition'),
   countdownSeconds: document.querySelector('#countdownSeconds'),
   zoomStrength: document.querySelector('#zoomStrength'),
   zoomStrengthValue: document.querySelector('#zoomStrengthValue'),
@@ -40,6 +43,7 @@ const state = {
   selectedSource: null,
   captureStream: null,
   micStream: null,
+  cameraStream: null,
   canvasStream: null,
   mediaRecorder: null,
   chunks: [],
@@ -106,6 +110,8 @@ const persistedSettingKeys = [
   'quality',
   'fps',
   'microphone',
+  'cameraBubble',
+  'cameraPosition',
   'countdownSeconds',
   'zoomStrength',
   'smoothing'
@@ -163,6 +169,8 @@ function getSettings() {
     quality: elements.quality.value,
     fps: Number(elements.fps.value),
     microphone: elements.microphone.checked,
+    cameraBubble: elements.cameraBubble.checked,
+    cameraPosition: elements.cameraPosition.value,
     countdownSeconds: Number(elements.countdownSeconds.value),
     zoomStrength: Number(elements.zoomStrength.value),
     smoothing: Number(elements.smoothing.value)
@@ -509,6 +517,47 @@ function drawKeyboardOverlay(settings) {
   ctx.restore();
 }
 
+function drawCameraBubble(settings) {
+  if (!settings.cameraBubble || !state.cameraStream || cameraVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    return;
+  }
+
+  const width = canvas.width;
+  const height = canvas.height;
+  const bubbleWidth = Math.min(width * 0.22, 460);
+  const bubbleHeight = bubbleWidth * 0.5625;
+  const margin = Math.max(32, width * 0.025);
+  const isTop = settings.cameraPosition.startsWith('top');
+  const isLeft = settings.cameraPosition.endsWith('left');
+  const x = isLeft ? margin : width - bubbleWidth - margin;
+  const y = isTop ? margin : height - bubbleHeight - margin;
+  const radius = Math.max(12, bubbleWidth * 0.035);
+
+  ctx.save();
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+  ctx.shadowBlur = 28;
+  ctx.shadowOffsetY = 12;
+  ctx.fillStyle = 'rgba(16, 17, 20, 0.78)';
+  roundRect(ctx, x - 8, y - 8, bubbleWidth + 16, bubbleHeight + 16, radius + 8);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  roundRect(ctx, x, y, bubbleWidth, bubbleHeight, radius);
+  ctx.clip();
+  ctx.translate(x + bubbleWidth, y);
+  ctx.scale(-1, 1);
+  ctx.drawImage(cameraVideo, 0, 0, bubbleWidth, bubbleHeight);
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(244, 241, 234, 0.88)';
+  ctx.lineWidth = Math.max(3, width * 0.0016);
+  roundRect(ctx, x, y, bubbleWidth, bubbleHeight, radius);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function roundRect(context, x, y, width, height, radius) {
   const r = Math.min(radius, width / 2, height / 2);
   context.beginPath();
@@ -532,6 +581,7 @@ function drawLoop() {
     drawVideoFrame(settings);
     drawCursorSpotlight(settings);
     drawPulse(settings);
+    drawCameraBubble(settings);
     drawKeyboardOverlay(settings);
     elements.emptyState.hidden = true;
   } else {
@@ -577,6 +627,30 @@ async function openMicrophoneStream() {
     },
     video: false
   });
+}
+
+async function openCameraStream() {
+  if (!elements.cameraBubble.checked) {
+    return null;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 60 }
+      }
+    });
+
+    cameraVideo.srcObject = stream;
+    await cameraVideo.play();
+    return stream;
+  } catch (error) {
+    console.warn('Camera bubble disabled because camera capture failed.', error);
+    return null;
+  }
 }
 
 function stopStream(stream) {
@@ -634,6 +708,7 @@ async function startRecording() {
 
     state.captureStream = await openCaptureStream();
     state.micStream = await openMicrophoneStream();
+    state.cameraStream = await openCameraStream();
     state.canvasStream = canvas.captureStream(getSettings().fps);
 
     if (state.micStream) {
@@ -774,12 +849,15 @@ function cleanupRecording() {
   state.timerId = null;
   stopStream(state.captureStream);
   stopStream(state.micStream);
+  stopStream(state.cameraStream);
   stopStream(state.canvasStream);
   state.captureStream = null;
   state.micStream = null;
+  state.cameraStream = null;
   state.canvasStream = null;
   state.mediaRecorder = null;
   video.srcObject = null;
+  cameraVideo.srcObject = null;
   elements.recordingDot.classList.remove('active');
   elements.emptyState.hidden = false;
 }
@@ -879,6 +957,8 @@ for (const input of [
   elements.quality,
   elements.fps,
   elements.microphone,
+  elements.cameraBubble,
+  elements.cameraPosition,
   elements.countdownSeconds,
   elements.zoomStrength,
   elements.smoothing

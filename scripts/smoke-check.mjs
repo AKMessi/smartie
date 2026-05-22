@@ -43,7 +43,10 @@ for (const feature of [
   'cancelRecording',
   'saveSettings',
   'loadPersistedSettings',
-  'handleGlobalShortcut'
+  'handleGlobalShortcut',
+  'cameraBubble',
+  'drawCameraBubble',
+  'openCameraStream'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);

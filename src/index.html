@@ -94,6 +94,21 @@
             <input id="microphone" type="checkbox">
           </label>
 
+          <label class="field inline">
+            <span>Camera bubble</span>
+            <input id="cameraBubble" type="checkbox">
+          </label>
+
+          <label class="field">
+            <span>Camera position</span>
+            <select id="cameraPosition">
+              <option value="bottom-right" selected>Bottom right</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="top-right">Top right</option>
+              <option value="top-left">Top left</option>
+            </select>
+          </label>
+
           <label class="field">
             <span>Countdown</span>
             <select id="countdownSeconds">
@@ -125,6 +140,7 @@
     </main>
 
     <video id="captureVideo" muted playsinline></video>
+    <video id="cameraVideo" muted playsinline></video>
     <script src="./renderer.js"></script>
   </body>
 </html>
