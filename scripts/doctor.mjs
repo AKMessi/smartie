@@ -84,12 +84,24 @@ function checkPackageTool() {
   add(existsSync(packagerPath) ? 'PASS' : 'FAIL', 'Linux packager', existsSync(packagerPath) ? 'installed' : 'run npm install');
 }
 
+function checkBundledFfmpeg() {
+  const ffmpegPath = join(root, 'node_modules', 'ffmpeg-static', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  if (!existsSync(ffmpegPath)) {
+    add('FAIL', 'Bundled FFmpeg', 'missing; run npm install');
+    return;
+  }
+
+  const version = run(ffmpegPath, ['-version']);
+  add(version ? 'PASS' : 'WARN', 'Bundled FFmpeg', version ? version.split('\n')[0] : 'installed but could not execute');
+}
+
 checkNode();
 checkPlatform();
 checkElectronInstall();
 checkSandbox();
 checkDesktopSession();
 checkPackageTool();
+checkBundledFfmpeg();
 
 let hasFailure = false;
 for (const check of checks) {

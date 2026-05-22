@@ -48,6 +48,7 @@ const elements = {
   cameraPosition: document.querySelector('#cameraPosition'),
   countdownSeconds: document.querySelector('#countdownSeconds'),
   saveMode: document.querySelector('#saveMode'),
+  exportFormat: document.querySelector('#exportFormat'),
   outputFolder: document.querySelector('#outputFolder'),
   chooseOutputFolder: document.querySelector('#chooseOutputFolder'),
   focusMode: document.querySelector('#focusMode'),
@@ -177,6 +178,7 @@ const persistedSettingKeys = [
   'cameraPosition',
   'countdownSeconds',
   'saveMode',
+  'exportFormat',
   'focusMode',
   'zoomStrength',
   'motionSensitivity',
@@ -330,6 +332,7 @@ function getSettings() {
     cameraPosition: elements.cameraPosition.value,
     countdownSeconds: Number(elements.countdownSeconds.value),
     saveMode: elements.saveMode.value,
+    exportFormat: elements.exportFormat.value,
     outputDir: state.outputDir,
     focusMode: elements.focusMode.value,
     zoomStrength: Number(elements.zoomStrength.value),
@@ -1336,7 +1339,8 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       micGain: settings.micGain,
       cameraBubble: settings.cameraBubble,
       cameraPosition: settings.cameraPosition,
-      saveMode: settings.saveMode
+      saveMode: settings.saveMode,
+      exportFormat: settings.exportFormat
     },
     health: {
       finalFps: state.health.fps,
@@ -1629,7 +1633,8 @@ async function saveRecording() {
       suggestedName,
       saveMode: settings.saveMode,
       outputDir: settings.outputDir,
-      metadata
+      metadata,
+      exportFormat: settings.exportFormat
     });
 
     if (result.canceled) {
@@ -1642,12 +1647,13 @@ async function saveRecording() {
       filePath: result.filePath,
       metadataPath: result.metadataPath,
       chaptersPath: result.chaptersPath,
+      mp4Path: result.mp4Path,
       sourceName: state.selectedSource ? state.selectedSource.name : null,
       durationMs,
       markers,
       createdAt: new Date().toISOString()
     });
-    setStatus('Saved');
+    setStatus(result.mp4Path ? 'Saved + MP4' : 'Saved');
   } catch (error) {
     console.error(error);
     setStatus(error.message || 'Save failed');
@@ -1727,6 +1733,7 @@ for (const input of [
   elements.cameraPosition,
   elements.countdownSeconds,
   elements.saveMode,
+  elements.exportFormat,
   elements.focusMode,
   elements.zoomStrength,
   elements.motionSensitivity,

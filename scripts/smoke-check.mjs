@@ -29,6 +29,14 @@ for (const script of ['doctor', 'package:linux']) {
   }
 }
 
+if (!pkg.scripts['package:linux'].includes('ffmpeg-static')) {
+  throw new Error('package:linux must unpack ffmpeg-static for MP4 export');
+}
+
+if (!pkg.dependencies || !pkg.dependencies['ffmpeg-static']) {
+  throw new Error('package.json is missing bundled ffmpeg-static dependency');
+}
+
 const html = readFileSync(join(root, 'src/index.html'), 'utf8');
 for (const asset of ['styles.css', 'renderer.js']) {
   if (!html.includes(asset)) {
@@ -77,6 +85,7 @@ for (const feature of [
   'hideWindowForRecording',
   'restoreRecordingWindow',
   'buildRecordingMetadata',
+  'exportFormat',
   'captureSnapshot',
   'canvasPngBytes'
 ]) {
@@ -86,7 +95,7 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }

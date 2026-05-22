@@ -1,6 +1,8 @@
 const { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, screen, shell } = require('electron');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const ffmpegPath = require('ffmpeg-static');
 
 const APP_TITLE = 'Smartie';
 const IS_SMOKE_TEST = process.argv.includes('--smoke-test');
@@ -207,6 +209,20 @@ function chapterPathFor(videoPath) {
   return `${base}.chapters.vtt`;
 }
 
+function mp4PathFor(videoPath) {
+  const extension = path.extname(videoPath);
+  const base = extension ? videoPath.slice(0, -extension.length) : videoPath;
+  return `${base}.mp4`;
+}
+
+function resolvedFfmpegPath() {
+  if (!ffmpegPath) {
+    return null;
+  }
+
+  return ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+}
+
 function formatVttTime(ms) {
   const safeMs = Math.max(0, Math.floor(ms || 0));
   const hours = Math.floor(safeMs / 3_600_000);
@@ -243,7 +259,52 @@ function buildMarkerWebVtt(metadata) {
   return `${lines.join('\n')}\n`;
 }
 
-async function writeRecordingFiles(filePath, bytes, metadata) {
+function transcodeToMp4(inputPath, outputPath) {
+  const binaryPath = resolvedFfmpegPath();
+  if (!binaryPath) {
+    throw new Error('Bundled FFmpeg is unavailable on this platform.');
+  }
+
+  const args = [
+    '-y',
+    '-i',
+    inputPath,
+    '-c:v',
+    'libx264',
+    '-preset',
+    'veryfast',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    '-movflags',
+    '+faststart',
+    outputPath
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(binaryPath, args, {
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    let errorOutput = '';
+
+    child.stderr.on('data', (chunk) => {
+      errorOutput += chunk.toString();
+    });
+
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`FFmpeg exited with code ${code}: ${errorOutput.slice(-1000)}`));
+    });
+  });
+}
+
+async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm') {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, Buffer.from(bytes));
 
@@ -251,7 +312,8 @@ async function writeRecordingFiles(filePath, bytes, metadata) {
     return {
       filePath,
       metadataPath: null,
-      chaptersPath: null
+      chaptersPath: null,
+      mp4Path: null
     };
   }
 
@@ -264,10 +326,17 @@ async function writeRecordingFiles(filePath, bytes, metadata) {
     await fs.writeFile(chaptersPath, chapters, 'utf8');
   }
 
+  const shouldTranscodeMp4 = exportFormat === 'webm-mp4';
+  const mp4Path = shouldTranscodeMp4 ? mp4PathFor(filePath) : null;
+  if (mp4Path) {
+    await transcodeToMp4(filePath, mp4Path);
+  }
+
   return {
     filePath,
     metadataPath,
-    chaptersPath: chapters ? chaptersPath : null
+    chaptersPath: chapters ? chaptersPath : null,
+    mp4Path
   };
 }
 
@@ -299,7 +368,7 @@ ipcMain.handle('smartie:get-pointer', () => ({
 }));
 
 ipcMain.handle('smartie:save-recording', async (_event, payload) => {
-  const { bytes, suggestedName, saveMode, outputDir, metadata } = payload || {};
+  const { bytes, suggestedName, saveMode, outputDir, metadata, exportFormat } = payload || {};
   if (!bytes) {
     throw new Error('No recording data received.');
   }
@@ -307,7 +376,7 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
   if (saveMode === 'auto') {
     const directory = outputDir || defaultRecordingDirectory();
     const filePath = path.join(directory, suggestedName || path.basename(defaultRecordingPath()));
-    const saved = await writeRecordingFiles(filePath, bytes, metadata);
+    const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat);
     return {
       canceled: false,
       ...saved
@@ -333,7 +402,7 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
     return { canceled: true };
   }
 
-  const saved = await writeRecordingFiles(result.filePath, bytes, metadata);
+  const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat);
   return {
     canceled: false,
     ...saved
