@@ -32,6 +32,7 @@ const elements = {
   keyboardOverlay: document.querySelector('#keyboardOverlay'),
   clickPulse: document.querySelector('#clickPulse'),
   idleWide: document.querySelector('#idleWide'),
+  privacyBlur: document.querySelector('#privacyBlur'),
   quality: document.querySelector('#quality'),
   fps: document.querySelector('#fps'),
   fpsValue: document.querySelector('#fpsValue'),
@@ -57,7 +58,10 @@ const elements = {
   motionSensitivity: document.querySelector('#motionSensitivity'),
   motionSensitivityValue: document.querySelector('#motionSensitivityValue'),
   smoothing: document.querySelector('#smoothing'),
-  smoothingValue: document.querySelector('#smoothingValue')
+  smoothingValue: document.querySelector('#smoothingValue'),
+  privacyRegion: document.querySelector('#privacyRegion'),
+  privacyStrength: document.querySelector('#privacyStrength'),
+  privacyStrengthValue: document.querySelector('#privacyStrengthValue')
 };
 
 const state = {
@@ -162,6 +166,7 @@ const persistedSettingKeys = [
   'keyboardOverlay',
   'clickPulse',
   'idleWide',
+  'privacyBlur',
   'quality',
   'fps',
   'microphone',
@@ -174,7 +179,9 @@ const persistedSettingKeys = [
   'focusMode',
   'zoomStrength',
   'motionSensitivity',
-  'smoothing'
+  'smoothing',
+  'privacyRegion',
+  'privacyStrength'
 ];
 
 const settingsStoreKey = 'smartie.settings.v1';
@@ -312,6 +319,7 @@ function getSettings() {
     keyboardOverlay: elements.keyboardOverlay.checked,
     clickPulse: elements.clickPulse.checked,
     idleWide: elements.idleWide.checked,
+    privacyBlur: elements.privacyBlur.checked,
     quality: elements.quality.value,
     fps: Number(elements.fps.value),
     microphone: elements.microphone.checked,
@@ -325,7 +333,9 @@ function getSettings() {
     focusMode: elements.focusMode.value,
     zoomStrength: Number(elements.zoomStrength.value),
     motionSensitivity: Number(elements.motionSensitivity.value),
-    smoothing: Number(elements.smoothing.value)
+    smoothing: Number(elements.smoothing.value),
+    privacyRegion: elements.privacyRegion.value,
+    privacyStrength: Number(elements.privacyStrength.value)
   };
 }
 
@@ -443,6 +453,7 @@ function syncControls() {
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
   elements.motionSensitivityValue.textContent = elements.motionSensitivity.value;
   elements.smoothingValue.textContent = `${Math.round(Number(elements.smoothing.value) * 100)}%`;
+  elements.privacyStrengthValue.textContent = `${elements.privacyStrength.value}px`;
   elements.outputFolder.textContent = state.outputDir || 'Default Videos folder';
   renderFocusStatus();
 
@@ -897,6 +908,57 @@ function drawVideoFrame(settings) {
   }
 }
 
+function privacyRect(settings) {
+  const width = canvas.width;
+  const height = canvas.height;
+  const rectWidth = Math.round(width * 0.32);
+  const rectHeight = Math.round(height * 0.18);
+  const margin = Math.round(width * 0.025);
+
+  if (settings.privacyRegion === 'center') {
+    return {
+      x: Math.round((width - rectWidth) / 2),
+      y: Math.round((height - rectHeight) / 2),
+      width: rectWidth,
+      height: rectHeight
+    };
+  }
+
+  const isTop = settings.privacyRegion.startsWith('top');
+  const isLeft = settings.privacyRegion.endsWith('left');
+  return {
+    x: isLeft ? margin : width - rectWidth - margin,
+    y: isTop ? margin : height - rectHeight - margin,
+    width: rectWidth,
+    height: rectHeight
+  };
+}
+
+function drawPrivacyBlur(settings) {
+  if (!settings.smartMaster || !settings.privacyBlur) {
+    return;
+  }
+
+  const rect = privacyRect(settings);
+
+  ctx.save();
+  ctx.beginPath();
+  roundRect(ctx, rect.x, rect.y, rect.width, rect.height, 8);
+  ctx.clip();
+  ctx.filter = `blur(${settings.privacyStrength}px)`;
+  ctx.drawImage(canvas, rect.x, rect.y, rect.width, rect.height, rect.x, rect.y, rect.width, rect.height);
+  ctx.restore();
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(16, 17, 20, 0.22)';
+  ctx.strokeStyle = 'rgba(255, 191, 90, 0.72)';
+  ctx.lineWidth = Math.max(2, canvas.width * 0.0012);
+  roundRect(ctx, rect.x, rect.y, rect.width, rect.height, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawCursorSpotlight(settings) {
   if (!settings.smartMaster || !settings.cursorSpotlight) {
     return;
@@ -1074,6 +1136,7 @@ function drawLoop(timestamp = performance.now()) {
 
   if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
     drawVideoFrame(settings);
+    drawPrivacyBlur(settings);
     drawCursorSpotlight(settings);
     drawPulse(settings);
     drawMarkerOverlay(settings);
@@ -1238,6 +1301,9 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       keyboardOverlay: settings.keyboardOverlay,
       clickPulse: settings.clickPulse,
       idleWide: settings.idleWide,
+      privacyBlur: settings.privacyBlur,
+      privacyRegion: settings.privacyRegion,
+      privacyStrength: settings.privacyStrength,
       focusMode: settings.focusMode,
       zoomStrength: settings.zoomStrength,
       motionSensitivity: settings.motionSensitivity,
@@ -1616,7 +1682,9 @@ for (const input of [
   elements.focusMode,
   elements.zoomStrength,
   elements.motionSensitivity,
-  elements.smoothing
+  elements.smoothing,
+  elements.privacyRegion,
+  elements.privacyStrength
 ]) {
   input.addEventListener('input', syncControls);
   input.addEventListener('input', applyMicSettings);

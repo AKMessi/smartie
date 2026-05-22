@@ -19,6 +19,7 @@ master feature toggle.
   - Keyboard overlay
   - Click/moment pulse
   - Idle wide shot
+  - Privacy blur
 - Microphone capture support.
 - Live mic level meter with gain control and recording-safe mute.
 - Optional mirrored webcam bubble with selectable corner placement.
@@ -27,6 +28,7 @@ master feature toggle.
 - Recent takes list with quick reveal actions.
 - Chapter markers with a shortcut and brief rendered marker overlay.
 - JSON sidecar metadata next to every saved video with markers and smart settings.
+- Rendered privacy blur region for masking sensitive UI during demos.
 - Live capture health telemetry with FPS and dropped-frame estimates.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.

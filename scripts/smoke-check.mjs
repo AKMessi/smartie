@@ -69,6 +69,8 @@ for (const feature of [
   'toggleFocusLock',
   'scanMotionTarget',
   'motionSensitivity',
+  'privacyBlur',
+  'drawPrivacyBlur',
   'dropMarker',
   'drawMarkerOverlay',
   'hideWhileRecording',
