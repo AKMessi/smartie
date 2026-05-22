@@ -42,6 +42,10 @@ const elements = {
   saveMode: document.querySelector('#saveMode'),
   outputFolder: document.querySelector('#outputFolder'),
   chooseOutputFolder: document.querySelector('#chooseOutputFolder'),
+  focusMode: document.querySelector('#focusMode'),
+  focusLock: document.querySelector('#focusLock'),
+  clearFocusLock: document.querySelector('#clearFocusLock'),
+  focusStatus: document.querySelector('#focusStatus'),
   zoomStrength: document.querySelector('#zoomStrength'),
   zoomStrengthValue: document.querySelector('#zoomStrengthValue'),
   smoothing: document.querySelector('#smoothing'),
@@ -81,6 +85,11 @@ const state = {
   pulse: {
     active: false,
     startedAt: 0,
+    x: 0.5,
+    y: 0.5
+  },
+  focusLock: {
+    active: false,
     x: 0.5,
     y: 0.5
   },
@@ -142,6 +151,7 @@ const persistedSettingKeys = [
   'cameraPosition',
   'countdownSeconds',
   'saveMode',
+  'focusMode',
   'zoomStrength',
   'smoothing'
 ];
@@ -288,6 +298,7 @@ function getSettings() {
     countdownSeconds: Number(elements.countdownSeconds.value),
     saveMode: elements.saveMode.value,
     outputDir: state.outputDir,
+    focusMode: elements.focusMode.value,
     zoomStrength: Number(elements.zoomStrength.value),
     smoothing: Number(elements.smoothing.value)
   };
@@ -385,6 +396,8 @@ function syncControls() {
   elements.micMute.disabled = !elements.microphone.checked || !state.micStream;
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
+  elements.focusLock.disabled = !elements.smartMaster.checked || !elements.autoZoom.checked || elements.focusMode.value === 'wide';
+  elements.clearFocusLock.disabled = !state.focusLock.active;
   elements.revealRecording.disabled = !state.lastRecordingPath;
 
   for (const input of document.querySelectorAll('.toggle-grid input')) {
@@ -396,9 +409,51 @@ function syncControls() {
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
   elements.smoothingValue.textContent = `${Math.round(Number(elements.smoothing.value) * 100)}%`;
   elements.outputFolder.textContent = state.outputDir || 'Default Videos folder';
+  renderFocusStatus();
 
   if (!state.micStream) {
     resetMicMeter(elements.microphone.checked ? (state.micMuted ? 'Muted' : 'Mic armed') : 'Mic off');
+  }
+}
+
+function renderFocusStatus() {
+  if (elements.focusMode.value === 'wide') {
+    elements.focusStatus.textContent = 'Holding wide shot';
+  } else if (state.focusLock.active) {
+    elements.focusStatus.textContent = `Locked ${Math.round(state.focusLock.x * 100)}%, ${Math.round(state.focusLock.y * 100)}%`;
+  } else if (elements.focusMode.value === 'click-lock') {
+    elements.focusStatus.textContent = 'Preview click arms focus';
+  } else {
+    elements.focusStatus.textContent = 'Following cursor';
+  }
+}
+
+function setFocusLock(x = state.pointer.x, y = state.pointer.y) {
+  const settings = getSettings();
+  if (!settings.smartMaster || !settings.autoZoom || settings.focusMode === 'wide') {
+    return;
+  }
+
+  state.focusLock = {
+    active: true,
+    x: Math.min(1, Math.max(0, x)),
+    y: Math.min(1, Math.max(0, y))
+  };
+  setStatus('Focus locked');
+  syncControls();
+}
+
+function clearFocusLock() {
+  state.focusLock.active = false;
+  setStatus('Focus released');
+  syncControls();
+}
+
+function toggleFocusLock() {
+  if (state.focusLock.active) {
+    clearFocusLock();
+  } else {
+    setFocusLock();
   }
 }
 
@@ -647,23 +702,33 @@ function smartTarget(settings) {
   const now = performance.now();
   const idleFor = now - state.pointer.lastMovedAt;
   const hasSmartZoom = settings.smartMaster && settings.autoZoom;
-  const shouldIdleWide = settings.smartMaster && settings.idleWide && idleFor > 1700;
+  const forcedWide = settings.focusMode === 'wide';
+  const hasFocusLock = state.focusLock.active && !forcedWide;
+  const shouldIdleWide = settings.smartMaster && settings.idleWide && !hasFocusLock && idleFor > 1700;
   const activeMotion = state.pointer.velocity > 0.003 || idleFor < 1300;
   let scale = 1;
+  let x = state.pointer.x;
+  let y = state.pointer.y;
 
-  if (hasSmartZoom && activeMotion) {
+  if (hasFocusLock) {
+    scale = settings.zoomStrength;
+    x = state.focusLock.x;
+    y = state.focusLock.y;
+  } else if (hasSmartZoom && activeMotion && !forcedWide) {
     const motionBoost = Math.min(0.28, state.pointer.velocity * 4.2);
     scale = settings.zoomStrength + motionBoost;
   }
 
-  if (shouldIdleWide) {
+  if (shouldIdleWide || forcedWide) {
     scale = 1;
+    x = 0.5;
+    y = 0.5;
   }
 
   return {
     scale,
-    x: hasSmartZoom ? state.pointer.x : 0.5,
-    y: hasSmartZoom ? state.pointer.y : 0.5
+    x: hasSmartZoom ? x : 0.5,
+    y: hasSmartZoom ? y : 0.5
   };
 }
 
@@ -1127,6 +1192,8 @@ function handleGlobalShortcut(action) {
     toggleSmartStack();
   } else if (action === 'toggle-mic-mute') {
     toggleMicMute();
+  } else if (action === 'toggle-focus-lock') {
+    toggleFocusLock();
   }
 }
 
@@ -1268,6 +1335,8 @@ elements.revealRecording.addEventListener('click', () => window.smartie.revealFi
 elements.chooseOutputFolder.addEventListener('click', chooseOutputFolder);
 elements.clearRecent.addEventListener('click', clearRecentRecordings);
 elements.micMute.addEventListener('click', toggleMicMute);
+elements.focusLock.addEventListener('click', () => setFocusLock());
+elements.clearFocusLock.addEventListener('click', clearFocusLock);
 window.smartie.onShortcut(handleGlobalShortcut);
 
 for (const input of [
@@ -1286,6 +1355,7 @@ for (const input of [
   elements.cameraPosition,
   elements.countdownSeconds,
   elements.saveMode,
+  elements.focusMode,
   elements.zoomStrength,
   elements.smoothing
 ]) {
@@ -1299,16 +1369,28 @@ for (const input of [
 
 window.addEventListener('keydown', updateKeyOverlay);
 window.addEventListener('click', (event) => {
-  if (!getSettings().clickPulse || !canvas.contains(event.target)) {
+  if (!canvas.contains(event.target)) {
     return;
   }
 
   const rect = canvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left) / rect.width;
+  const y = (event.clientY - rect.top) / rect.height;
+  const settings = getSettings();
+
+  if (settings.smartMaster && settings.autoZoom && settings.focusMode === 'click-lock') {
+    setFocusLock(x, y);
+  }
+
+  if (!settings.clickPulse) {
+    return;
+  }
+
   state.pulse = {
     active: true,
     startedAt: performance.now(),
-    x: (event.clientX - rect.left) / rect.width,
-    y: (event.clientY - rect.top) / rect.height
+    x,
+    y
   };
 });
 

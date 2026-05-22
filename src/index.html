@@ -167,6 +167,24 @@
           </div>
 
           <label class="field">
+            <span>Focus mode</span>
+            <select id="focusMode">
+              <option value="cursor" selected>Follow cursor</option>
+              <option value="click-lock">Click to lock</option>
+              <option value="wide">Wide shot</option>
+            </select>
+          </label>
+
+          <div class="field">
+            <span>Focus lock</span>
+            <div class="button-row">
+              <button id="focusLock" type="button" class="mini-button">Lock Current</button>
+              <button id="clearFocusLock" type="button" class="mini-button" disabled>Clear</button>
+            </div>
+            <output id="focusStatus">Following cursor</output>
+          </div>
+
+          <label class="field">
             <span>Zoom strength</span>
             <input id="zoomStrength" type="range" min="1.1" max="2.4" step="0.1" value="1.7">
             <output id="zoomStrengthValue">1.7x</output>

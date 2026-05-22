@@ -389,6 +389,12 @@ canvas {
   gap: 8px;
 }
 
+.button-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .level-meter {
   height: 12px;
   overflow: hidden;

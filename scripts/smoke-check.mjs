@@ -63,7 +63,10 @@ for (const feature of [
   'renderHealth',
   'micGain',
   'toggleMicMute',
-  'startMicMeter'
+  'startMicMeter',
+  'focusMode',
+  'setFocusLock',
+  'toggleFocusLock'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);

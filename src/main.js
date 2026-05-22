@@ -35,6 +35,11 @@ const recorderShortcuts = [
     action: 'toggle-mic-mute',
     accelerator: 'CommandOrControl+Alt+M',
     label: 'Mute or unmute microphone'
+  },
+  {
+    action: 'toggle-focus-lock',
+    accelerator: 'CommandOrControl+Alt+F',
+    label: 'Lock or release smart focus'
   }
 ];
 
