@@ -53,6 +53,9 @@ const elements = {
   micLevelText: document.querySelector('#micLevelText'),
   micGain: document.querySelector('#micGain'),
   micGainValue: document.querySelector('#micGainValue'),
+  noiseGate: document.querySelector('#noiseGate'),
+  noiseGateThreshold: document.querySelector('#noiseGateThreshold'),
+  noiseGateThresholdValue: document.querySelector('#noiseGateThresholdValue'),
   cameraBubble: document.querySelector('#cameraBubble'),
   cameraDevice: document.querySelector('#cameraDevice'),
   refreshDevices: document.querySelector('#refreshDevices'),
@@ -87,6 +90,7 @@ const state = {
   micStream: null,
   audioContext: null,
   micSource: null,
+  micGateNode: null,
   micGainNode: null,
   micAnalyser: null,
   micMeterId: null,
@@ -199,6 +203,8 @@ const persistedSettingKeys = [
   'microphone',
   'micDevice',
   'micGain',
+  'noiseGate',
+  'noiseGateThreshold',
   'cameraBubble',
   'cameraDevice',
   'hideWhileRecording',
@@ -455,6 +461,8 @@ function getSettings() {
     micDevice: elements.micDevice.value,
     micDeviceLabel: selectedOptionLabel(elements.micDevice),
     micGain: Number(elements.micGain.value),
+    noiseGate: elements.noiseGate.checked,
+    noiseGateThreshold: Number(elements.noiseGateThreshold.value),
     cameraBubble: elements.cameraBubble.checked,
     cameraDevice: elements.cameraDevice.value,
     cameraDeviceLabel: selectedOptionLabel(elements.cameraDevice),
@@ -576,6 +584,7 @@ function syncControls() {
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
   elements.micDevice.disabled = state.recording;
+  elements.noiseGateThreshold.disabled = !elements.noiseGate.checked;
   elements.cameraDevice.disabled = state.recording;
   elements.refreshDevices.disabled = state.recording;
   elements.titleDuration.disabled = !elements.smartMaster.checked || !elements.titleOverlay.checked;
@@ -590,6 +599,7 @@ function syncControls() {
 
   elements.fpsValue.textContent = `${elements.fps.value} fps`;
   elements.micGainValue.textContent = `${Math.round(Number(elements.micGain.value) * 100)}%`;
+  elements.noiseGateThresholdValue.textContent = `${Math.round(Number(elements.noiseGateThreshold.value) * 100)}%`;
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
   elements.motionSensitivityValue.textContent = elements.motionSensitivity.value;
   elements.smoothingValue.textContent = `${Math.round(Number(elements.smoothing.value) * 100)}%`;
@@ -652,6 +662,32 @@ function toggleFocusLock() {
 function resetMicMeter(label = 'Mic off') {
   elements.micLevelBar.style.width = '0%';
   elements.micLevelText.textContent = label;
+}
+
+function createNoiseGateNode(audioContext) {
+  const node = audioContext.createScriptProcessor(1024, 1, 1);
+  let gateLevel = 1;
+
+  node.onaudioprocess = (event) => {
+    const input = event.inputBuffer.getChannelData(0);
+    const output = event.outputBuffer.getChannelData(0);
+    const settings = getSettings();
+    let sum = 0;
+
+    for (const sample of input) {
+      sum += sample * sample;
+    }
+
+    const rms = Math.sqrt(sum / input.length);
+    const target = settings.noiseGate && rms < settings.noiseGateThreshold ? 0.08 : 1;
+    gateLevel += (target - gateLevel) * 0.18;
+
+    for (let index = 0; index < input.length; index += 1) {
+      output[index] = input[index] * gateLevel;
+    }
+  };
+
+  return node;
 }
 
 function applyMicSettings() {
@@ -1728,12 +1764,14 @@ async function openMicrophoneStream(settings = getSettings()) {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     state.audioContext = new AudioContext();
     state.micSource = state.audioContext.createMediaStreamSource(inputStream);
+    state.micGateNode = createNoiseGateNode(state.audioContext);
     state.micGainNode = state.audioContext.createGain();
     state.micAnalyser = state.audioContext.createAnalyser();
     state.micAnalyser.fftSize = 512;
 
     const destination = state.audioContext.createMediaStreamDestination();
-    state.micSource.connect(state.micGainNode);
+    state.micSource.connect(state.micGateNode);
+    state.micGateNode.connect(state.micGainNode);
     state.micGainNode.connect(destination);
     state.micGainNode.connect(state.micAnalyser);
     applyMicSettings();
@@ -1899,6 +1937,8 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       micDevice: settings.micDevice || 'default',
       micDeviceLabel: settings.micDeviceLabel,
       micGain: settings.micGain,
+      noiseGate: settings.noiseGate,
+      noiseGateThreshold: settings.noiseGateThreshold,
       cameraBubble: settings.cameraBubble,
       cameraDevice: settings.cameraDevice || 'default',
       cameraDeviceLabel: settings.cameraDeviceLabel,
@@ -2145,6 +2185,10 @@ function cleanupRecording() {
   state.micInputStream = null;
   state.micStream = null;
   state.micSource = null;
+  if (state.micGateNode) {
+    state.micGateNode.onaudioprocess = null;
+  }
+  state.micGateNode = null;
   state.micGainNode = null;
   state.micAnalyser = null;
   if (state.audioContext) {
@@ -2315,6 +2359,8 @@ for (const input of [
   elements.microphone,
   elements.micDevice,
   elements.micGain,
+  elements.noiseGate,
+  elements.noiseGateThreshold,
   elements.cameraBubble,
   elements.cameraDevice,
   elements.hideWhileRecording,

@@ -175,6 +175,17 @@
           </label>
 
           <label class="field inline">
+            <span>Noise gate</span>
+            <input id="noiseGate" type="checkbox" checked>
+          </label>
+
+          <label class="field">
+            <span>Noise floor</span>
+            <input id="noiseGateThreshold" type="range" min="0.005" max="0.08" step="0.005" value="0.02">
+            <output id="noiseGateThresholdValue">2%</output>
+          </label>
+
+          <label class="field inline">
             <span>Camera bubble</span>
             <input id="cameraBubble" type="checkbox">
           </label>

@@ -25,7 +25,7 @@ master feature toggle.
   - Idle wide shot
   - Privacy blur
 - Microphone capture support.
-- Live mic level meter with gain control and recording-safe mute.
+- Live mic level meter with gain control, noise gate, and recording-safe mute.
 - Microphone and camera device selectors with refresh support.
 - Optional mirrored webcam bubble with selectable corner placement.
 - Optional hide-while-recording mode to keep Smartie out of full-screen takes.
