@@ -29,6 +29,7 @@ master feature toggle.
 - Chapter markers with a shortcut and brief rendered marker overlay.
 - JSON sidecar metadata next to every saved video with markers and smart settings.
 - WebVTT chapter sidecars for marker import into players and editors.
+- PNG snapshot capture from the polished recording canvas.
 - Rendered privacy blur region for masking sensitive UI during demos.
 - Live capture health telemetry with FPS and dropped-frame estimates.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
@@ -69,6 +70,7 @@ root-owned.
 - `Ctrl+Alt+M`: mute or unmute microphone.
 - `Ctrl+Alt+F`: lock or release smart focus.
 - `Ctrl+Alt+K`: drop a chapter marker.
+- `Ctrl+Alt+J`: save a PNG snapshot.
 - `Ctrl+Alt+H`: show or hide Smartie.
 
 On some desktop environments a shortcut can fail to register if another app or

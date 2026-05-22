@@ -47,6 +47,11 @@ const recorderShortcuts = [
     label: 'Drop chapter marker'
   },
   {
+    action: 'capture-snapshot',
+    accelerator: 'CommandOrControl+Alt+J',
+    label: 'Capture PNG snapshot'
+  },
+  {
     action: 'toggle-window-visibility',
     accelerator: 'CommandOrControl+Alt+H',
     label: 'Show or hide Smartie'
@@ -127,7 +132,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   });
 
@@ -331,6 +337,44 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
   return {
     canceled: false,
     ...saved
+  };
+});
+
+ipcMain.handle('smartie:save-snapshot', async (_event, payload) => {
+  const { bytes, suggestedName, saveMode, outputDir } = payload || {};
+  if (!bytes) {
+    throw new Error('No snapshot data received.');
+  }
+
+  if (saveMode === 'auto') {
+    const directory = outputDir || defaultRecordingDirectory();
+    const filePath = path.join(directory, suggestedName || `smartie-snapshot-${Date.now()}.png`);
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(filePath, Buffer.from(bytes));
+    return {
+      canceled: false,
+      filePath
+    };
+  }
+
+  showMainWindow();
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Smartie snapshot',
+    defaultPath: path.join(outputDir || defaultRecordingDirectory(), suggestedName || `smartie-snapshot-${Date.now()}.png`),
+    filters: [
+      { name: 'PNG image', extensions: ['png'] },
+      { name: 'All files', extensions: ['*'] }
+    ]
+  });
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+
+  await fs.writeFile(result.filePath, Buffer.from(bytes));
+  return {
+    canceled: false,
+    filePath: result.filePath
   };
 });
 

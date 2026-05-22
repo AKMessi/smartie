@@ -76,7 +76,9 @@ for (const feature of [
   'hideWhileRecording',
   'hideWindowForRecording',
   'restoreRecordingWindow',
-  'buildRecordingMetadata'
+  'buildRecordingMetadata',
+  'captureSnapshot',
+  'canvasPngBytes'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);
@@ -84,14 +86,14 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }
 }
 
 const preload = readFileSync(join(root, 'src/preload.js'), 'utf8');
-for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir', 'setWindowHidden', 'toggleWindowVisibility']) {
+for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir', 'setWindowHidden', 'toggleWindowVisibility', 'saveSnapshot']) {
   if (!preload.includes(feature)) {
     throw new Error(`Preload is missing shortcut bridge: ${feature}`);
   }

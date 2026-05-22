@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('smartie', {
   listSources: () => ipcRenderer.invoke('smartie:list-sources'),
   getPointer: () => ipcRenderer.invoke('smartie:get-pointer'),
   saveRecording: (payload) => ipcRenderer.invoke('smartie:save-recording', payload),
+  saveSnapshot: (payload) => ipcRenderer.invoke('smartie:save-snapshot', payload),
   revealFile: (filePath) => ipcRenderer.invoke('smartie:reveal-file', filePath),
   getDefaultOutputDir: () => ipcRenderer.invoke('smartie:get-default-output-dir'),
   chooseOutputDir: () => ipcRenderer.invoke('smartie:choose-output-dir'),

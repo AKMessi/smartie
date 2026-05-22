@@ -16,6 +16,7 @@ const elements = {
   startRecording: document.querySelector('#startRecording'),
   pauseRecording: document.querySelector('#pauseRecording'),
   dropMarker: document.querySelector('#dropMarker'),
+  captureSnapshot: document.querySelector('#captureSnapshot'),
   stopRecording: document.querySelector('#stopRecording'),
   cancelRecording: document.querySelector('#cancelRecording'),
   revealRecording: document.querySelector('#revealRecording'),
@@ -433,6 +434,7 @@ function syncControls() {
   elements.pauseRecording.textContent = state.paused ? 'Resume' : 'Pause';
   elements.pauseRecording.classList.toggle('active', state.paused);
   elements.dropMarker.disabled = !state.recording;
+  elements.captureSnapshot.disabled = !state.selectedSource && !state.recording;
   elements.stopRecording.disabled = !state.recording;
   elements.cancelRecording.disabled = !state.recording;
   elements.refreshSources.disabled = state.recording;
@@ -1277,6 +1279,24 @@ function buildSuggestedName() {
   return `smartie-${stamp}.webm`;
 }
 
+function buildSnapshotName() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `smartie-snapshot-${stamp}.png`;
+}
+
+function canvasPngBytes() {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(async (blob) => {
+      if (!blob) {
+        reject(new Error('Could not render snapshot.'));
+        return;
+      }
+
+      resolve(new Uint8Array(await blob.arrayBuffer()));
+    }, 'image/png');
+  });
+}
+
 function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }) {
   return {
     app: 'Smartie',
@@ -1470,6 +1490,30 @@ function dropMarker() {
   setStatus(`${marker.label} dropped`);
 }
 
+async function captureSnapshot() {
+  try {
+    const settings = getSettings();
+    const result = await window.smartie.saveSnapshot({
+      bytes: await canvasPngBytes(),
+      suggestedName: buildSnapshotName(),
+      saveMode: settings.saveMode,
+      outputDir: settings.outputDir
+    });
+
+    if (result.canceled) {
+      setStatus('Snapshot canceled');
+      return;
+    }
+
+    state.lastRecordingPath = result.filePath;
+    setStatus('Snapshot saved');
+    syncControls();
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || 'Snapshot failed');
+  }
+}
+
 function toggleSmartStack() {
   elements.smartMaster.checked = !elements.smartMaster.checked;
   setStatus(elements.smartMaster.checked ? 'Smart features enabled' : 'Smart features disabled');
@@ -1496,6 +1540,8 @@ function handleGlobalShortcut(action) {
     toggleFocusLock();
   } else if (action === 'drop-marker') {
     dropMarker();
+  } else if (action === 'capture-snapshot') {
+    captureSnapshot();
   } else if (action === 'toggle-window-visibility') {
     window.smartie.toggleWindowVisibility().catch((error) => {
       console.warn('Could not toggle Smartie window visibility.', error);
@@ -1653,6 +1699,7 @@ elements.refreshSources.addEventListener('click', refreshSources);
 elements.startRecording.addEventListener('click', startRecording);
 elements.pauseRecording.addEventListener('click', togglePauseRecording);
 elements.dropMarker.addEventListener('click', dropMarker);
+elements.captureSnapshot.addEventListener('click', captureSnapshot);
 elements.stopRecording.addEventListener('click', stopRecording);
 elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
