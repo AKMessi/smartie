@@ -77,6 +77,7 @@
             <label><input id="motionFocus" type="checkbox" checked> Motion focus</label>
             <label><input id="keyboardOverlay" type="checkbox" checked> Keyboard overlay</label>
             <label><input id="titleOverlay" type="checkbox" checked> Title overlay</label>
+            <label><input id="cueOverlay" type="checkbox"> Presenter cues</label>
             <label><input id="clickPulse" type="checkbox" checked> Moment pulse</label>
             <label><input id="autoMarkers" type="checkbox" checked> Auto chapters</label>
             <label><input id="idleWide" type="checkbox" checked> Idle wide shot</label>
@@ -125,6 +126,19 @@
               <option value="2500" selected>2.5 seconds</option>
               <option value="4000">4 seconds</option>
               <option value="6000">6 seconds</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Presenter cue</span>
+            <textarea id="cueText" maxlength="260" rows="3" placeholder="Call out the problem, then show the fix."></textarea>
+          </label>
+
+          <label class="field">
+            <span>Cue position</span>
+            <select id="cuePosition">
+              <option value="top" selected>Top</option>
+              <option value="bottom">Bottom</option>
             </select>
           </label>
 

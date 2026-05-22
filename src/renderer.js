@@ -33,6 +33,7 @@ const elements = {
   motionFocus: document.querySelector('#motionFocus'),
   keyboardOverlay: document.querySelector('#keyboardOverlay'),
   titleOverlay: document.querySelector('#titleOverlay'),
+  cueOverlay: document.querySelector('#cueOverlay'),
   clickPulse: document.querySelector('#clickPulse'),
   autoMarkers: document.querySelector('#autoMarkers'),
   idleWide: document.querySelector('#idleWide'),
@@ -43,6 +44,8 @@ const elements = {
   fpsValue: document.querySelector('#fpsValue'),
   takeTitle: document.querySelector('#takeTitle'),
   titleDuration: document.querySelector('#titleDuration'),
+  cueText: document.querySelector('#cueText'),
+  cuePosition: document.querySelector('#cuePosition'),
   microphone: document.querySelector('#microphone'),
   micDevice: document.querySelector('#micDevice'),
   micMute: document.querySelector('#micMute'),
@@ -181,6 +184,7 @@ const persistedSettingKeys = [
   'motionFocus',
   'keyboardOverlay',
   'titleOverlay',
+  'cueOverlay',
   'clickPulse',
   'autoMarkers',
   'idleWide',
@@ -190,6 +194,8 @@ const persistedSettingKeys = [
   'fps',
   'takeTitle',
   'titleDuration',
+  'cueText',
+  'cuePosition',
   'microphone',
   'micDevice',
   'micGain',
@@ -288,6 +294,10 @@ function fileNameFromPath(filePath) {
 
 function cleanTitle(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+}
+
+function cleanCueText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 260);
 }
 
 function fileSafeTitle(value) {
@@ -429,6 +439,7 @@ function getSettings() {
     motionFocus: elements.motionFocus.checked,
     keyboardOverlay: elements.keyboardOverlay.checked,
     titleOverlay: elements.titleOverlay.checked,
+    cueOverlay: elements.cueOverlay.checked,
     clickPulse: elements.clickPulse.checked,
     autoMarkers: elements.autoMarkers.checked,
     idleWide: elements.idleWide.checked,
@@ -438,6 +449,8 @@ function getSettings() {
     fps: Number(elements.fps.value),
     takeTitle: cleanTitle(elements.takeTitle.value),
     titleDuration: Number(elements.titleDuration.value),
+    cueText: cleanCueText(elements.cueText.value),
+    cuePosition: elements.cuePosition.value,
     microphone: elements.microphone.checked,
     micDevice: elements.micDevice.value,
     micDeviceLabel: selectedOptionLabel(elements.micDevice),
@@ -566,6 +579,7 @@ function syncControls() {
   elements.cameraDevice.disabled = state.recording;
   elements.refreshDevices.disabled = state.recording;
   elements.titleDuration.disabled = !elements.smartMaster.checked || !elements.titleOverlay.checked;
+  elements.cuePosition.disabled = !elements.smartMaster.checked || !elements.cueOverlay.checked;
   elements.focusLock.disabled = !elements.smartMaster.checked || !elements.autoZoom.checked || elements.focusMode.value === 'wide';
   elements.clearFocusLock.disabled = !state.focusLock.active;
   elements.revealRecording.disabled = !state.lastRecordingPath;
@@ -1410,6 +1424,42 @@ function wrapCanvasText(context, text, maxWidth, maxLines) {
   return lines;
 }
 
+function wrapCueText(context, text, maxWidth, maxLines) {
+  const words = cleanCueText(text).split(' ').filter(Boolean);
+  const lines = [];
+  let line = '';
+
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (context.measureText(candidate).width <= maxWidth) {
+      line = candidate;
+      continue;
+    }
+
+    if (line) {
+      lines.push(line);
+      line = word;
+    } else {
+      lines.push(truncateCanvasText(context, word, maxWidth));
+      line = '';
+    }
+
+    if (lines.length === maxLines) {
+      break;
+    }
+  }
+
+  if (line && lines.length < maxLines) {
+    lines.push(truncateCanvasText(context, line, maxWidth));
+  }
+
+  if (lines.length === maxLines && words.join(' ') !== lines.join(' ')) {
+    lines[lines.length - 1] = truncateCanvasText(context, lines[lines.length - 1], maxWidth);
+  }
+
+  return lines;
+}
+
 function drawTitleOverlay(settings) {
   const title = cleanTitle(settings.takeTitle);
   if (!settings.smartMaster || !settings.titleOverlay || !title || !state.recording) {
@@ -1500,6 +1550,52 @@ function drawTitleOverlay(settings) {
   ctx.restore();
 }
 
+function drawCueOverlay(settings) {
+  const text = cleanCueText(settings.cueText);
+  if (!settings.smartMaster || !settings.cueOverlay || !text || !state.recording) {
+    return;
+  }
+
+  const width = canvas.width;
+  const height = canvas.height;
+  const margin = Math.max(34, width * 0.026);
+  const maxWidth = Math.min(width - margin * 2, width * 0.72);
+  const fontSize = Math.round(Math.max(24, Math.min(38, width * 0.018)));
+  const lineHeight = Math.round(fontSize * 1.28);
+  const paddingX = Math.round(Math.max(28, width * 0.018));
+  const paddingY = Math.round(Math.max(20, height * 0.018));
+
+  ctx.save();
+  ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+  const lines = wrapCueText(ctx, text, maxWidth - paddingX * 2, 3);
+  const contentWidth = lines.reduce((widest, line) => Math.max(widest, ctx.measureText(line).width), 0);
+  const boxWidth = Math.min(maxWidth, contentWidth + paddingX * 2);
+  const boxHeight = paddingY * 2 + lineHeight * lines.length;
+  const x = Math.round((width - boxWidth) / 2);
+  const y = settings.cuePosition === 'bottom'
+    ? Math.round(height - boxHeight - margin)
+    : margin;
+
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.38)';
+  ctx.shadowBlur = 24;
+  ctx.shadowOffsetY = 10;
+  ctx.fillStyle = 'rgba(16, 17, 20, 0.82)';
+  ctx.strokeStyle = 'rgba(118, 168, 255, 0.86)';
+  ctx.lineWidth = Math.max(2, width * 0.0012);
+  roundRect(ctx, x, y, boxWidth, boxHeight, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.shadowColor = 'transparent';
+  ctx.fillStyle = '#f4f1ea';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  lines.forEach((line, index) => {
+    ctx.fillText(line, x + boxWidth / 2, y + paddingY + lineHeight * index + lineHeight / 2);
+  });
+  ctx.restore();
+}
+
 function drawCameraBubble(settings) {
   if (!settings.cameraBubble || !state.cameraStream || cameraVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
     return;
@@ -1572,6 +1668,7 @@ function drawLoop(timestamp = performance.now()) {
     drawCameraBubble(settings);
     drawKeyboardOverlay(settings);
     drawTitleOverlay(settings);
+    drawCueOverlay(settings);
     elements.emptyState.hidden = true;
   } else {
     drawWaitingFrame();
@@ -1766,7 +1863,10 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
     take: {
       title: settings.takeTitle,
       titleOverlay: settings.titleOverlay,
-      titleDurationMs: settings.titleDuration
+      titleDurationMs: settings.titleDuration,
+      cueOverlay: settings.cueOverlay,
+      cueText: settings.cueText,
+      cuePosition: settings.cuePosition
     },
     markers,
     smartStack: {
@@ -1777,6 +1877,7 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       motionFocus: settings.motionFocus,
       keyboardOverlay: settings.keyboardOverlay,
       titleOverlay: settings.titleOverlay,
+      cueOverlay: settings.cueOverlay,
       clickPulse: settings.clickPulse,
       autoMarkers: settings.autoMarkers,
       idleWide: settings.idleWide,
@@ -2200,6 +2301,7 @@ for (const input of [
   elements.motionFocus,
   elements.keyboardOverlay,
   elements.titleOverlay,
+  elements.cueOverlay,
   elements.clickPulse,
   elements.autoMarkers,
   elements.idleWide,
@@ -2208,6 +2310,8 @@ for (const input of [
   elements.fps,
   elements.takeTitle,
   elements.titleDuration,
+  elements.cueText,
+  elements.cuePosition,
   elements.microphone,
   elements.micDevice,
   elements.micGain,

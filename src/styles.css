@@ -30,7 +30,8 @@ body {
 
 button,
 select,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -426,12 +427,14 @@ canvas {
 
 select,
 input[type="text"],
+textarea,
 input[type="range"] {
   width: 100%;
 }
 
 select,
-input[type="text"] {
+input[type="text"],
+textarea {
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -440,7 +443,14 @@ input[type="text"] {
   background: var(--panel-strong);
 }
 
-input[type="text"]::placeholder {
+textarea {
+  min-height: 76px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
+input[type="text"]::placeholder,
+textarea::placeholder {
   color: #6f7783;
 }
 

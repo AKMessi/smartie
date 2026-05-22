@@ -19,6 +19,7 @@ master feature toggle.
   - Motion focus
   - Keyboard overlay
   - Rendered take title overlays
+  - Presenter cue overlays
   - Click/moment pulse
   - Automatic smart chapter markers
   - Idle wide shot
@@ -35,6 +36,7 @@ master feature toggle.
 - WebVTT chapter sidecars for marker import into players and editors.
 - PNG snapshot capture from the polished recording canvas.
 - Take title naming with optional rendered title card and lower-third overlay.
+- Presenter cue text with optional rendered top or bottom prompt overlay.
 - Landscape, square, and vertical output layouts for demo, social, and mobile-ready exports.
 - Rendered privacy blur region for masking sensitive UI during demos.
 - Live capture health telemetry with FPS and dropped-frame estimates.
