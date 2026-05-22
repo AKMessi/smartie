@@ -24,6 +24,7 @@ master feature toggle.
   - Privacy blur
 - Microphone capture support.
 - Live mic level meter with gain control and recording-safe mute.
+- Microphone and camera device selectors with refresh support.
 - Optional mirrored webcam bubble with selectable corner placement.
 - Optional hide-while-recording mode to keep Smartie out of full-screen takes.
 - Auto-save mode with a selectable output folder for repeated takes.

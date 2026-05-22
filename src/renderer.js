@@ -43,12 +43,15 @@ const elements = {
   takeTitle: document.querySelector('#takeTitle'),
   titleDuration: document.querySelector('#titleDuration'),
   microphone: document.querySelector('#microphone'),
+  micDevice: document.querySelector('#micDevice'),
   micMute: document.querySelector('#micMute'),
   micLevelBar: document.querySelector('#micLevelBar'),
   micLevelText: document.querySelector('#micLevelText'),
   micGain: document.querySelector('#micGain'),
   micGainValue: document.querySelector('#micGainValue'),
   cameraBubble: document.querySelector('#cameraBubble'),
+  cameraDevice: document.querySelector('#cameraDevice'),
+  refreshDevices: document.querySelector('#refreshDevices'),
   hideWhileRecording: document.querySelector('#hideWhileRecording'),
   cameraPosition: document.querySelector('#cameraPosition'),
   countdownSeconds: document.querySelector('#countdownSeconds'),
@@ -101,6 +104,8 @@ const state = {
   lastRecordingPath: null,
   recentRecordings: [],
   outputDir: null,
+  preferredMicDevice: '',
+  preferredCameraDevice: '',
   markers: [],
   activeMarker: null,
   windowHiddenForRecording: false,
@@ -183,8 +188,10 @@ const persistedSettingKeys = [
   'takeTitle',
   'titleDuration',
   'microphone',
+  'micDevice',
   'micGain',
   'cameraBubble',
+  'cameraDevice',
   'hideWhileRecording',
   'cameraPosition',
   'countdownSeconds',
@@ -223,6 +230,14 @@ function loadPersistedSettings() {
 
     if (settings.outputDir) {
       state.outputDir = settings.outputDir;
+    }
+
+    if (settings.micDevice) {
+      state.preferredMicDevice = settings.micDevice;
+    }
+
+    if (settings.cameraDevice) {
+      state.preferredCameraDevice = settings.cameraDevice;
     }
   } catch (error) {
     console.warn('Could not load Smartie settings.', error);
@@ -278,6 +293,44 @@ function fileSafeTitle(value) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
+}
+
+function selectedOptionLabel(select) {
+  return select.selectedOptions[0]?.textContent || '';
+}
+
+function deviceLabel(device, fallback, index) {
+  return device.label || `${fallback} ${index + 1}`;
+}
+
+function uniqueDevices(devices) {
+  const seen = new Set();
+  return devices.filter((device) => {
+    if (!device.deviceId || seen.has(device.deviceId)) {
+      return false;
+    }
+
+    seen.add(device.deviceId);
+    return true;
+  });
+}
+
+function renderDeviceSelect(select, devices, selectedValue, defaultLabel, fallbackLabel) {
+  select.textContent = '';
+
+  const defaultOption = document.createElement('option');
+  defaultOption.value = '';
+  defaultOption.textContent = defaultLabel;
+  select.append(defaultOption);
+
+  devices.forEach((device, index) => {
+    const option = document.createElement('option');
+    option.value = device.deviceId;
+    option.textContent = deviceLabel(device, fallbackLabel, index);
+    select.append(option);
+  });
+
+  select.value = devices.some((device) => device.deviceId === selectedValue) ? selectedValue : '';
 }
 
 function canvasSizeForSettings(settings = getSettings()) {
@@ -382,8 +435,12 @@ function getSettings() {
     takeTitle: cleanTitle(elements.takeTitle.value),
     titleDuration: Number(elements.titleDuration.value),
     microphone: elements.microphone.checked,
+    micDevice: elements.micDevice.value,
+    micDeviceLabel: selectedOptionLabel(elements.micDevice),
     micGain: Number(elements.micGain.value),
     cameraBubble: elements.cameraBubble.checked,
+    cameraDevice: elements.cameraDevice.value,
+    cameraDeviceLabel: selectedOptionLabel(elements.cameraDevice),
     hideWhileRecording: elements.hideWhileRecording.checked,
     cameraPosition: elements.cameraPosition.value,
     countdownSeconds: Number(elements.countdownSeconds.value),
@@ -501,6 +558,9 @@ function syncControls() {
   elements.micMute.disabled = !elements.microphone.checked || !state.micStream;
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
+  elements.micDevice.disabled = state.recording;
+  elements.cameraDevice.disabled = state.recording;
+  elements.refreshDevices.disabled = state.recording;
   elements.titleDuration.disabled = !elements.smartMaster.checked || !elements.titleOverlay.checked;
   elements.focusLock.disabled = !elements.smartMaster.checked || !elements.autoZoom.checked || elements.focusMode.value === 'wide';
   elements.clearFocusLock.disabled = !state.focusLock.active;
@@ -654,6 +714,34 @@ async function hydrateOutputFolder() {
   }
 
   syncControls();
+}
+
+async function refreshMediaDevices({ quiet = false } = {}) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    elements.micDevice.disabled = true;
+    elements.cameraDevice.disabled = true;
+    elements.refreshDevices.disabled = true;
+    if (!quiet) {
+      setStatus('Device list unavailable');
+    }
+    return;
+  }
+
+  const currentMic = elements.micDevice.value || state.preferredMicDevice;
+  const currentCamera = elements.cameraDevice.value || state.preferredCameraDevice;
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const microphones = uniqueDevices(devices.filter((device) => device.kind === 'audioinput'));
+  const cameras = uniqueDevices(devices.filter((device) => device.kind === 'videoinput'));
+
+  renderDeviceSelect(elements.micDevice, microphones, currentMic, 'Default microphone', 'Microphone');
+  renderDeviceSelect(elements.cameraDevice, cameras, currentCamera, 'Default camera', 'Camera');
+  state.preferredMicDevice = elements.micDevice.value;
+  state.preferredCameraDevice = elements.cameraDevice.value;
+  syncControls();
+
+  if (!quiet) {
+    setStatus('Devices refreshed');
+  }
 }
 
 async function hideWindowForRecording(settings) {
@@ -1432,8 +1520,7 @@ function drawLoop(timestamp = performance.now()) {
   requestAnimationFrame(drawLoop);
 }
 
-async function openCaptureStream() {
-  const settings = getSettings();
+async function openCaptureStream(settings = getSettings()) {
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
   const captureStream = await navigator.mediaDevices.getUserMedia({
     audio: false,
@@ -1455,20 +1542,29 @@ async function openCaptureStream() {
   return captureStream;
 }
 
-async function openMicrophoneStream() {
-  if (!elements.microphone.checked) {
+async function openMicrophoneStream(settings = getSettings()) {
+  if (!settings.microphone) {
     return null;
   }
 
+  const audio = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  };
+
+  if (settings.micDevice) {
+    audio.deviceId = { exact: settings.micDevice };
+  }
+
   const inputStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    },
+    audio,
     video: false
   });
 
+  refreshMediaDevices({ quiet: true }).catch((error) => {
+    console.warn('Could not refresh media devices after microphone permission.', error);
+  });
   state.micInputStream = inputStream;
 
   try {
@@ -1493,21 +1589,30 @@ async function openMicrophoneStream() {
   }
 }
 
-async function openCameraStream() {
-  if (!elements.cameraBubble.checked) {
+async function openCameraStream(settings = getSettings()) {
+  if (!settings.cameraBubble) {
     return null;
   }
 
   try {
+    const videoConstraints = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30, max: 60 }
+    };
+
+    if (settings.cameraDevice) {
+      videoConstraints.deviceId = { exact: settings.cameraDevice };
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 30, max: 60 }
-      }
+      video: videoConstraints
     });
 
+    refreshMediaDevices({ quiet: true }).catch((error) => {
+      console.warn('Could not refresh media devices after camera permission.', error);
+    });
     cameraVideo.srcObject = stream;
     await cameraVideo.play();
     return stream;
@@ -1629,8 +1734,12 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       outputHeight: outputSize.height,
       fps: settings.fps,
       microphone: settings.microphone,
+      micDevice: settings.micDevice || 'default',
+      micDeviceLabel: settings.micDeviceLabel,
       micGain: settings.micGain,
       cameraBubble: settings.cameraBubble,
+      cameraDevice: settings.cameraDevice || 'default',
+      cameraDeviceLabel: settings.cameraDeviceLabel,
       cameraPosition: settings.cameraPosition,
       saveMode: settings.saveMode,
       exportFormat: settings.exportFormat
@@ -1655,10 +1764,10 @@ async function startRecording() {
     await runCountdown(settings.countdownSeconds);
     await hideWindowForRecording(settings);
 
-    state.captureStream = await openCaptureStream();
-    state.micStream = await openMicrophoneStream();
-    state.cameraStream = await openCameraStream();
-    state.canvasStream = canvas.captureStream(getSettings().fps);
+    state.captureStream = await openCaptureStream(settings);
+    state.micStream = await openMicrophoneStream(settings);
+    state.cameraStream = await openCameraStream(settings);
+    state.canvasStream = canvas.captureStream(settings.fps);
 
     if (state.micStream) {
       for (const track of state.micStream.getAudioTracks()) {
@@ -1667,7 +1776,7 @@ async function startRecording() {
     }
 
     const mimeType = recorderMimeType();
-    const profile = qualityProfiles[getSettings().quality] || qualityProfiles.balanced;
+    const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
     state.chunks = [];
     state.markers = [];
     state.activeMarker = null;
@@ -2007,6 +2116,18 @@ elements.revealRecording.addEventListener('click', () => window.smartie.revealFi
 elements.chooseOutputFolder.addEventListener('click', chooseOutputFolder);
 elements.clearRecent.addEventListener('click', clearRecentRecordings);
 elements.micMute.addEventListener('click', toggleMicMute);
+elements.micDevice.addEventListener('change', () => {
+  state.preferredMicDevice = elements.micDevice.value;
+});
+elements.cameraDevice.addEventListener('change', () => {
+  state.preferredCameraDevice = elements.cameraDevice.value;
+});
+elements.refreshDevices.addEventListener('click', () => {
+  refreshMediaDevices().catch((error) => {
+    console.error(error);
+    setStatus(error.message || 'Device refresh failed');
+  });
+});
 elements.focusLock.addEventListener('click', () => setFocusLock());
 elements.clearFocusLock.addEventListener('click', clearFocusLock);
 window.smartie.onShortcut(handleGlobalShortcut);
@@ -2027,8 +2148,10 @@ for (const input of [
   elements.takeTitle,
   elements.titleDuration,
   elements.microphone,
+  elements.micDevice,
   elements.micGain,
   elements.cameraBubble,
+  elements.cameraDevice,
   elements.hideWhileRecording,
   elements.cameraPosition,
   elements.countdownSeconds,
@@ -2093,6 +2216,9 @@ refreshSources().catch((error) => {
 });
 hydrateOutputFolder().catch((error) => {
   console.warn('Could not load Smartie output folder.', error);
+});
+refreshMediaDevices({ quiet: true }).catch((error) => {
+  console.warn('Could not enumerate media devices.', error);
 });
 reportShortcutRegistration().catch((error) => {
   console.warn('Could not inspect Smartie shortcuts.', error);

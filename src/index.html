@@ -133,6 +133,16 @@
           </label>
 
           <div class="field">
+            <span>Mic device</span>
+            <div class="select-row">
+              <select id="micDevice">
+                <option value="" selected>Default microphone</option>
+              </select>
+              <button id="refreshDevices" type="button" class="ghost">Refresh</button>
+            </div>
+          </div>
+
+          <div class="field">
             <span>Mic level</span>
             <div class="meter-row">
               <div class="level-meter" aria-label="Microphone level">
@@ -152,6 +162,13 @@
           <label class="field inline">
             <span>Camera bubble</span>
             <input id="cameraBubble" type="checkbox">
+          </label>
+
+          <label class="field">
+            <span>Camera device</span>
+            <select id="cameraDevice">
+              <option value="" selected>Default camera</option>
+            </select>
           </label>
 
           <label class="field inline">
