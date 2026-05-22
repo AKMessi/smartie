@@ -147,6 +147,27 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
+.health-pill {
+  min-width: 78px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.health-pill.good {
+  border-color: rgba(66, 214, 198, 0.5);
+  color: var(--teal);
+}
+
+.health-pill.warn {
+  border-color: rgba(255, 191, 90, 0.5);
+  color: var(--amber);
+}
+
 .recording-dot {
   width: 10px;
   height: 10px;

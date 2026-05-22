@@ -15,6 +15,7 @@ const elements = {
   cancelRecording: document.querySelector('#cancelRecording'),
   revealRecording: document.querySelector('#revealRecording'),
   statusText: document.querySelector('#statusText'),
+  healthText: document.querySelector('#healthText'),
   timer: document.querySelector('#timer'),
   recordingDot: document.querySelector('#recordingDot'),
   emptyState: document.querySelector('#emptyState'),
@@ -85,6 +86,13 @@ const state = {
     scale: 1,
     x: 0.5,
     y: 0.5
+  },
+  health: {
+    framesThisSecond: 0,
+    lastSampleAt: performance.now(),
+    lastFrameAt: 0,
+    fps: 0,
+    droppedFrames: 0
   }
 };
 
@@ -290,6 +298,65 @@ function updateTimer() {
 
   const now = state.paused ? state.pausedAt : Date.now();
   elements.timer.textContent = formatTime(now - state.startedAt - state.pausedDuration);
+}
+
+function resetHealth() {
+  state.health = {
+    framesThisSecond: 0,
+    lastSampleAt: performance.now(),
+    lastFrameAt: 0,
+    fps: 0,
+    droppedFrames: 0
+  };
+  renderHealth();
+}
+
+function renderHealth() {
+  elements.healthText.classList.remove('good', 'warn');
+
+  if (!state.recording) {
+    elements.healthText.textContent = 'Idle';
+    return;
+  }
+
+  if (state.paused) {
+    elements.healthText.textContent = 'Paused';
+    elements.healthText.classList.add('warn');
+    return;
+  }
+
+  const targetFps = getSettings().fps;
+  const isHealthy = state.health.fps >= targetFps * 0.75 && state.health.droppedFrames === 0;
+  elements.healthText.textContent = state.health.droppedFrames > 0
+    ? `${state.health.fps} fps / ${state.health.droppedFrames} drops`
+    : `${state.health.fps} fps`;
+  elements.healthText.classList.add(isHealthy ? 'good' : 'warn');
+}
+
+function updateFrameHealth(now, targetFps) {
+  if (!state.recording || state.paused) {
+    state.health.lastFrameAt = 0;
+    renderHealth();
+    return;
+  }
+
+  if (state.health.lastFrameAt > 0) {
+    const frameBudget = 1000 / targetFps;
+    const delta = now - state.health.lastFrameAt;
+    if (delta > frameBudget * 1.8) {
+      state.health.droppedFrames += Math.max(1, Math.round(delta / frameBudget) - 1);
+    }
+  }
+
+  state.health.lastFrameAt = now;
+  state.health.framesThisSecond += 1;
+
+  if (now - state.health.lastSampleAt >= 1000) {
+    state.health.fps = Math.round((state.health.framesThisSecond * 1000) / (now - state.health.lastSampleAt));
+    state.health.framesThisSecond = 0;
+    state.health.lastSampleAt = now;
+    renderHealth();
+  }
 }
 
 function syncControls() {
@@ -684,12 +751,13 @@ function roundRect(context, x, y, width, height, radius) {
   context.closePath();
 }
 
-function drawLoop() {
+function drawLoop(timestamp = performance.now()) {
   if (!state.drawing) {
     return;
   }
 
   const settings = getSettings();
+  updateFrameHealth(timestamp, settings.fps);
   easeFrame(settings);
 
   if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -855,6 +923,7 @@ async function startRecording() {
     state.startedAt = Date.now();
     state.pausedAt = 0;
     state.pausedDuration = 0;
+    resetHealth();
     state.timerId = window.setInterval(updateTimer, 250);
     state.drawing = true;
     state.frame = { scale: 1, x: 0.5, y: 0.5 };
@@ -885,6 +954,7 @@ function togglePauseRecording() {
     state.pausedDuration += Date.now() - state.pausedAt;
     state.paused = false;
     state.pausedAt = 0;
+    state.health.lastFrameAt = 0;
     setStatus('Recording');
   } else {
     if (state.mediaRecorder.state === 'recording') {
@@ -893,6 +963,7 @@ function togglePauseRecording() {
 
     state.paused = true;
     state.pausedAt = Date.now();
+    renderHealth();
     setStatus('Paused');
   }
 
@@ -975,6 +1046,7 @@ function cleanupRecording() {
   cameraVideo.srcObject = null;
   elements.recordingDot.classList.remove('active');
   elements.emptyState.hidden = false;
+  resetHealth();
 }
 
 async function saveRecording() {
@@ -1117,6 +1189,7 @@ loadRecentRecordings();
 renderRecentRecordings();
 resizeCanvasForProfile();
 drawWaitingFrame();
+renderHealth();
 syncControls();
 refreshSources().catch((error) => {
   console.error(error);

@@ -58,7 +58,9 @@ for (const feature of [
   'hydrateOutputFolder',
   'recentRecordings',
   'rememberRecording',
-  'renderRecentRecordings'
+  'renderRecentRecordings',
+  'updateFrameHealth',
+  'renderHealth'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);
