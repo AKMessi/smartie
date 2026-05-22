@@ -189,6 +189,31 @@ function defaultRecordingDirectory() {
   }
 }
 
+function sidecarPathFor(videoPath) {
+  const extension = path.extname(videoPath);
+  const base = extension ? videoPath.slice(0, -extension.length) : videoPath;
+  return `${base}.smartie.json`;
+}
+
+async function writeRecordingFiles(filePath, bytes, metadata) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, Buffer.from(bytes));
+
+  if (!metadata) {
+    return {
+      filePath,
+      metadataPath: null
+    };
+  }
+
+  const metadataPath = sidecarPathFor(filePath);
+  await fs.writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
+  return {
+    filePath,
+    metadataPath
+  };
+}
+
 ipcMain.handle('smartie:list-sources', async () => {
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],
@@ -217,7 +242,7 @@ ipcMain.handle('smartie:get-pointer', () => ({
 }));
 
 ipcMain.handle('smartie:save-recording', async (_event, payload) => {
-  const { bytes, suggestedName, saveMode, outputDir } = payload || {};
+  const { bytes, suggestedName, saveMode, outputDir, metadata } = payload || {};
   if (!bytes) {
     throw new Error('No recording data received.');
   }
@@ -225,11 +250,10 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
   if (saveMode === 'auto') {
     const directory = outputDir || defaultRecordingDirectory();
     const filePath = path.join(directory, suggestedName || path.basename(defaultRecordingPath()));
-    await fs.mkdir(directory, { recursive: true });
-    await fs.writeFile(filePath, Buffer.from(bytes));
+    const saved = await writeRecordingFiles(filePath, bytes, metadata);
     return {
       canceled: false,
-      filePath
+      ...saved
     };
   }
 
@@ -252,10 +276,10 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
     return { canceled: true };
   }
 
-  await fs.writeFile(result.filePath, Buffer.from(bytes));
+  const saved = await writeRecordingFiles(result.filePath, bytes, metadata);
   return {
     canceled: false,
-    filePath: result.filePath
+    ...saved
   };
 });
 

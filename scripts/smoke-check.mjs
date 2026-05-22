@@ -71,7 +71,8 @@ for (const feature of [
   'drawMarkerOverlay',
   'hideWhileRecording',
   'hideWindowForRecording',
-  'restoreRecordingWindow'
+  'restoreRecordingWindow',
+  'buildRecordingMetadata'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);
@@ -79,7 +80,7 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }

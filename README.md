@@ -26,6 +26,7 @@ master feature toggle.
 - Auto-save mode with a selectable output folder for repeated takes.
 - Recent takes list with quick reveal actions.
 - Chapter markers with a shortcut and brief rendered marker overlay.
+- JSON sidecar metadata next to every saved video with markers and smart settings.
 - Live capture health telemetry with FPS and dropped-frame estimates.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.

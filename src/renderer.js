@@ -1128,6 +1128,50 @@ function buildSuggestedName() {
   return `smartie-${stamp}.webm`;
 }
 
+function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }) {
+  return {
+    app: 'Smartie',
+    version: 1,
+    createdAt: new Date().toISOString(),
+    suggestedName,
+    source: state.selectedSource
+      ? {
+          id: state.selectedSource.id,
+          name: state.selectedSource.name,
+          displayId: state.selectedSource.displayId
+        }
+      : null,
+    durationMs,
+    duration: formatTime(durationMs),
+    markers,
+    smartStack: {
+      enabled: settings.smartMaster,
+      autoZoom: settings.autoZoom,
+      cursorSpotlight: settings.cursorSpotlight,
+      motionFocus: settings.motionFocus,
+      keyboardOverlay: settings.keyboardOverlay,
+      clickPulse: settings.clickPulse,
+      idleWide: settings.idleWide,
+      focusMode: settings.focusMode,
+      zoomStrength: settings.zoomStrength,
+      smoothing: settings.smoothing
+    },
+    capture: {
+      quality: settings.quality,
+      fps: settings.fps,
+      microphone: settings.microphone,
+      micGain: settings.micGain,
+      cameraBubble: settings.cameraBubble,
+      cameraPosition: settings.cameraPosition,
+      saveMode: settings.saveMode
+    },
+    health: {
+      finalFps: state.health.fps,
+      droppedFrames: state.health.droppedFrames
+    }
+  };
+}
+
 async function startRecording() {
   if (!state.selectedSource || state.recording) {
     return;
@@ -1368,15 +1412,23 @@ async function saveRecording() {
   const settings = getSettings();
   const durationMs = recordingElapsedMs();
   const markers = state.markers.slice();
+  const suggestedName = buildSuggestedName();
+  const metadata = buildRecordingMetadata({
+    suggestedName,
+    durationMs,
+    markers,
+    settings
+  });
 
   cleanupRecording();
 
   try {
     const result = await window.smartie.saveRecording({
       bytes,
-      suggestedName: buildSuggestedName(),
+      suggestedName,
       saveMode: settings.saveMode,
-      outputDir: settings.outputDir
+      outputDir: settings.outputDir,
+      metadata
     });
 
     if (result.canceled) {
@@ -1387,6 +1439,7 @@ async function saveRecording() {
     state.lastRecordingPath = result.filePath;
     rememberRecording({
       filePath: result.filePath,
+      metadataPath: result.metadataPath,
       sourceName: state.selectedSource ? state.selectedSource.name : null,
       durationMs,
       markers,
