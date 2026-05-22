@@ -37,6 +37,7 @@ const elements = {
   idleWide: document.querySelector('#idleWide'),
   privacyBlur: document.querySelector('#privacyBlur'),
   quality: document.querySelector('#quality'),
+  outputLayout: document.querySelector('#outputLayout'),
   fps: document.querySelector('#fps'),
   fpsValue: document.querySelector('#fpsValue'),
   takeTitle: document.querySelector('#takeTitle'),
@@ -177,6 +178,7 @@ const persistedSettingKeys = [
   'idleWide',
   'privacyBlur',
   'quality',
+  'outputLayout',
   'fps',
   'takeTitle',
   'titleDuration',
@@ -278,6 +280,30 @@ function fileSafeTitle(value) {
     .slice(0, 48);
 }
 
+function canvasSizeForSettings(settings = getSettings()) {
+  const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
+
+  if (settings.outputLayout === 'vertical') {
+    return {
+      width: profile.height,
+      height: profile.width
+    };
+  }
+
+  if (settings.outputLayout === 'square') {
+    const size = Math.min(profile.width, profile.height);
+    return {
+      width: size,
+      height: size
+    };
+  }
+
+  return {
+    width: profile.width,
+    height: profile.height
+  };
+}
+
 function renderRecentRecordings() {
   elements.recentList.textContent = '';
   elements.clearRecent.disabled = state.recentRecordings.length === 0;
@@ -351,6 +377,7 @@ function getSettings() {
     idleWide: elements.idleWide.checked,
     privacyBlur: elements.privacyBlur.checked,
     quality: elements.quality.value,
+    outputLayout: elements.outputLayout.value,
     fps: Number(elements.fps.value),
     takeTitle: cleanTitle(elements.takeTitle.value),
     titleDuration: Number(elements.titleDuration.value),
@@ -490,6 +517,7 @@ function syncControls() {
   elements.smoothingValue.textContent = `${Math.round(Number(elements.smoothing.value) * 100)}%`;
   elements.privacyStrengthValue.textContent = `${elements.privacyStrength.value}px`;
   elements.outputFolder.textContent = state.outputDir || 'Default Videos folder';
+  syncCanvasOutputSize();
   renderFocusStatus();
 
   if (!state.micStream) {
@@ -844,10 +872,51 @@ function stopPointerPolling() {
   }
 }
 
-function resizeCanvasForProfile() {
-  const profile = qualityProfiles[elements.quality.value] || qualityProfiles.balanced;
-  canvas.width = profile.width;
-  canvas.height = profile.height;
+function resizeCanvasForProfile(settings = getSettings()) {
+  const size = canvasSizeForSettings(settings);
+  const changed = canvas.width !== size.width || canvas.height !== size.height;
+  if (changed) {
+    canvas.width = size.width;
+    canvas.height = size.height;
+  }
+  return changed;
+}
+
+function syncCanvasOutputSize() {
+  if (state.recording) {
+    return;
+  }
+
+  if (resizeCanvasForProfile()) {
+    drawWaitingFrame();
+  }
+}
+
+function canvasPointFromEvent(event) {
+  const rect = canvas.getBoundingClientRect();
+  const canvasAspect = canvas.width / canvas.height;
+  const elementAspect = rect.width / rect.height;
+  let renderedWidth = rect.width;
+  let renderedHeight = rect.height;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  if (elementAspect > canvasAspect) {
+    renderedWidth = rect.height * canvasAspect;
+    offsetX = (rect.width - renderedWidth) / 2;
+  } else if (elementAspect < canvasAspect) {
+    renderedHeight = rect.width / canvasAspect;
+    offsetY = (rect.height - renderedHeight) / 2;
+  }
+
+  const x = (event.clientX - rect.left - offsetX) / renderedWidth;
+  const y = (event.clientY - rect.top - offsetY) / renderedHeight;
+
+  if (x < 0 || x > 1 || y < 0 || y > 1) {
+    return null;
+  }
+
+  return { x, y };
 }
 
 function drawWaitingFrame() {
@@ -1488,7 +1557,10 @@ function recorderMimeType() {
 function buildSuggestedName(settings = getSettings()) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const title = fileSafeTitle(settings.takeTitle);
-  return `smartie-${title ? `${title}-` : ''}${stamp}.webm`;
+  const layout = settings.outputLayout && settings.outputLayout !== 'landscape'
+    ? `${settings.outputLayout}-`
+    : '';
+  return `smartie-${title ? `${title}-` : ''}${layout}${stamp}.webm`;
 }
 
 function buildSnapshotName() {
@@ -1510,6 +1582,8 @@ function canvasPngBytes() {
 }
 
 function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }) {
+  const outputSize = canvasSizeForSettings(settings);
+
   return {
     app: 'Smartie',
     version: 1,
@@ -1550,6 +1624,9 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
     },
     capture: {
       quality: settings.quality,
+      outputLayout: settings.outputLayout,
+      outputWidth: outputSize.width,
+      outputHeight: outputSize.height,
       fps: settings.fps,
       microphone: settings.microphone,
       micGain: settings.micGain,
@@ -1945,6 +2022,7 @@ for (const input of [
   elements.clickPulse,
   elements.idleWide,
   elements.quality,
+  elements.outputLayout,
   elements.fps,
   elements.takeTitle,
   elements.titleDuration,
@@ -1977,9 +2055,12 @@ window.addEventListener('click', (event) => {
     return;
   }
 
-  const rect = canvas.getBoundingClientRect();
-  const x = (event.clientX - rect.left) / rect.width;
-  const y = (event.clientY - rect.top) / rect.height;
+  const point = canvasPointFromEvent(event);
+  if (!point) {
+    return;
+  }
+
+  const { x, y } = point;
   const settings = getSettings();
 
   if (settings.smartMaster && settings.autoZoom && settings.focusMode === 'click-lock') {

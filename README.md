@@ -33,13 +33,14 @@ master feature toggle.
 - WebVTT chapter sidecars for marker import into players and editors.
 - PNG snapshot capture from the polished recording canvas.
 - Take title naming with optional rendered title card and lower-third overlay.
+- Landscape, square, and vertical output layouts for demo, social, and mobile-ready exports.
 - Rendered privacy blur region for masking sensitive UI during demos.
 - Live capture health telemetry with FPS and dropped-frame estimates.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
 - Global recorder shortcuts with Wayland portal support where available.
-- Quality presets, frame-rate control, countdown, elapsed timer, WebM export,
-  and optional bundled-FFmpeg MP4 copy.
+- Quality presets, output layout control, frame-rate control, countdown,
+  elapsed timer, WebM export, and optional bundled-FFmpeg MP4 copy.
 - Linux desktop support through Electron desktop capture APIs.
 
 ## Requirements

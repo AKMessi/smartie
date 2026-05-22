@@ -98,6 +98,15 @@
           </label>
 
           <label class="field">
+            <span>Output layout</span>
+            <select id="outputLayout">
+              <option value="landscape" selected>Landscape 16:9</option>
+              <option value="square">Square 1:1</option>
+              <option value="vertical">Vertical 9:16</option>
+            </select>
+          </label>
+
+          <label class="field">
             <span>Frame rate</span>
             <input id="fps" type="range" min="24" max="60" step="6" value="60">
             <output id="fpsValue">60 fps</output>
