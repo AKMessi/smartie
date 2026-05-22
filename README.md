@@ -15,6 +15,7 @@ master feature toggle.
 - Master Smart Features toggle plus individual toggles for:
   - Auto zoom
   - Cursor spotlight
+  - Cursor trail
   - Motion focus
   - Keyboard overlay
   - Click/moment pulse

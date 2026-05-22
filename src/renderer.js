@@ -29,6 +29,7 @@ const elements = {
   smartMaster: document.querySelector('#smartMaster'),
   autoZoom: document.querySelector('#autoZoom'),
   cursorSpotlight: document.querySelector('#cursorSpotlight'),
+  cursorTrail: document.querySelector('#cursorTrail'),
   motionFocus: document.querySelector('#motionFocus'),
   keyboardOverlay: document.querySelector('#keyboardOverlay'),
   clickPulse: document.querySelector('#clickPulse'),
@@ -92,6 +93,7 @@ const state = {
   pausedDuration: 0,
   timerId: null,
   pointerPollId: null,
+  trail: [],
   lastRecordingPath: null,
   recentRecordings: [],
   outputDir: null,
@@ -164,6 +166,7 @@ const persistedSettingKeys = [
   'smartMaster',
   'autoZoom',
   'cursorSpotlight',
+  'cursorTrail',
   'motionFocus',
   'keyboardOverlay',
   'clickPulse',
@@ -318,6 +321,7 @@ function getSettings() {
     smartMaster: elements.smartMaster.checked,
     autoZoom: elements.autoZoom.checked,
     cursorSpotlight: elements.cursorSpotlight.checked,
+    cursorTrail: elements.cursorTrail.checked,
     motionFocus: elements.motionFocus.checked,
     keyboardOverlay: elements.keyboardOverlay.checked,
     clickPulse: elements.clickPulse.checked,
@@ -718,6 +722,12 @@ function mapPointerToCapture(pointerPayload) {
 
   if (velocity > 0.002) {
     state.pointer.lastMovedAt = performance.now();
+    state.trail.push({
+      x,
+      y,
+      at: performance.now()
+    });
+    state.trail = state.trail.slice(-28);
   }
 
   if (velocity > 0.055 && getSettings().clickPulse) {
@@ -986,6 +996,38 @@ function drawCursorSpotlight(settings) {
   ctx.restore();
 }
 
+function drawCursorTrail(settings) {
+  if (!settings.smartMaster || !settings.cursorTrail || state.trail.length < 2) {
+    return;
+  }
+
+  const now = performance.now();
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let i = 1; i < state.trail.length; i += 1) {
+    const previous = state.trail[i - 1];
+    const current = state.trail[i];
+    const age = now - current.at;
+    const opacity = Math.max(0, 1 - age / 900);
+
+    if (opacity <= 0) {
+      continue;
+    }
+
+    ctx.strokeStyle = `rgba(66, 214, 198, ${opacity * 0.72})`;
+    ctx.lineWidth = Math.max(5, canvas.width * 0.004) * opacity;
+    ctx.beginPath();
+    ctx.moveTo(previous.x * canvas.width, previous.y * canvas.height);
+    ctx.lineTo(current.x * canvas.width, current.y * canvas.height);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+  state.trail = state.trail.filter((point) => now - point.at < 900);
+}
+
 function drawPulse(settings) {
   if (!settings.smartMaster || !settings.clickPulse || !state.pulse.active) {
     return;
@@ -1142,6 +1184,7 @@ function drawLoop(timestamp = performance.now()) {
   if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
     drawVideoFrame(settings);
     drawPrivacyBlur(settings);
+    drawCursorTrail(settings);
     drawCursorSpotlight(settings);
     drawPulse(settings);
     drawMarkerOverlay(settings);
@@ -1320,6 +1363,7 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       enabled: settings.smartMaster,
       autoZoom: settings.autoZoom,
       cursorSpotlight: settings.cursorSpotlight,
+      cursorTrail: settings.cursorTrail,
       motionFocus: settings.motionFocus,
       keyboardOverlay: settings.keyboardOverlay,
       clickPulse: settings.clickPulse,
@@ -1404,6 +1448,7 @@ async function startRecording() {
     state.frame = { scale: 1, x: 0.5, y: 0.5 };
     state.motionTarget.previousFrame = null;
     state.motionTarget.strength = 0;
+    state.trail = [];
     startPointerPolling();
     requestAnimationFrame(drawLoop);
 
@@ -1720,6 +1765,7 @@ for (const input of [
   elements.smartMaster,
   elements.autoZoom,
   elements.cursorSpotlight,
+  elements.cursorTrail,
   elements.motionFocus,
   elements.keyboardOverlay,
   elements.clickPulse,
