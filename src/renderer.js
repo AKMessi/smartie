@@ -34,6 +34,7 @@ const elements = {
   keyboardOverlay: document.querySelector('#keyboardOverlay'),
   titleOverlay: document.querySelector('#titleOverlay'),
   clickPulse: document.querySelector('#clickPulse'),
+  autoMarkers: document.querySelector('#autoMarkers'),
   idleWide: document.querySelector('#idleWide'),
   privacyBlur: document.querySelector('#privacyBlur'),
   quality: document.querySelector('#quality'),
@@ -108,6 +109,7 @@ const state = {
   preferredCameraDevice: '',
   markers: [],
   activeMarker: null,
+  lastAutoMarkerAt: -Infinity,
   windowHiddenForRecording: false,
   keys: [],
   pulse: {
@@ -180,6 +182,7 @@ const persistedSettingKeys = [
   'keyboardOverlay',
   'titleOverlay',
   'clickPulse',
+  'autoMarkers',
   'idleWide',
   'privacyBlur',
   'quality',
@@ -427,6 +430,7 @@ function getSettings() {
     keyboardOverlay: elements.keyboardOverlay.checked,
     titleOverlay: elements.titleOverlay.checked,
     clickPulse: elements.clickPulse.checked,
+    autoMarkers: elements.autoMarkers.checked,
     idleWide: elements.idleWide.checked,
     privacyBlur: elements.privacyBlur.checked,
     quality: elements.quality.value,
@@ -697,6 +701,57 @@ function toggleMicMute() {
   syncControls();
 }
 
+function pushRecordingMarker({ kind = 'manual', label, reason = null, x = state.pointer.x, y = state.pointer.y } = {}) {
+  if (!state.recording) {
+    return null;
+  }
+
+  const marker = {
+    label: label || `Marker ${state.markers.length + 1}`,
+    kind,
+    atMs: recordingElapsedMs(),
+    x: Math.round(Math.min(1, Math.max(0, x)) * 1000) / 1000,
+    y: Math.round(Math.min(1, Math.max(0, y)) * 1000) / 1000,
+    createdAt: new Date().toISOString()
+  };
+
+  if (reason) {
+    marker.reason = reason;
+  }
+
+  state.markers.push(marker);
+  state.activeMarker = {
+    ...marker,
+    startedAt: performance.now()
+  };
+  return marker;
+}
+
+function recordSmartMoment(settings, reason, x = state.pointer.x, y = state.pointer.y) {
+  if (!settings.smartMaster || !settings.autoMarkers || !state.recording || state.paused) {
+    return;
+  }
+
+  const atMs = recordingElapsedMs();
+  if (atMs - state.lastAutoMarkerAt < 3200) {
+    return;
+  }
+
+  const momentCount = state.markers.filter((marker) => marker.kind === 'smart-moment').length + 1;
+  const marker = pushRecordingMarker({
+    kind: 'smart-moment',
+    label: `Moment ${momentCount}`,
+    reason,
+    x,
+    y
+  });
+
+  if (marker) {
+    state.lastAutoMarkerAt = marker.atMs;
+    setStatus(`${marker.label} captured`);
+  }
+}
+
 async function chooseOutputFolder() {
   const folder = await window.smartie.chooseOutputDir();
   if (!folder) {
@@ -872,13 +927,18 @@ function mapPointerToCapture(pointerPayload) {
     state.trail = state.trail.slice(-28);
   }
 
-  if (velocity > 0.055 && getSettings().clickPulse) {
+  const settings = getSettings();
+  if (velocity > 0.055 && settings.clickPulse) {
     state.pulse = {
       active: true,
       startedAt: performance.now(),
       x,
       y
     };
+  }
+
+  if (velocity > 0.072) {
+    recordSmartMoment(settings, 'pointer emphasis', x, y);
   }
 }
 
@@ -1718,6 +1778,7 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       keyboardOverlay: settings.keyboardOverlay,
       titleOverlay: settings.titleOverlay,
       clickPulse: settings.clickPulse,
+      autoMarkers: settings.autoMarkers,
       idleWide: settings.idleWide,
       privacyBlur: settings.privacyBlur,
       privacyRegion: settings.privacyRegion,
@@ -1780,6 +1841,7 @@ async function startRecording() {
     state.chunks = [];
     state.markers = [];
     state.activeMarker = null;
+    state.lastAutoMarkerAt = -Infinity;
     state.discardRequested = false;
     state.mediaRecorder = new MediaRecorder(state.canvasStream, {
       mimeType,
@@ -1883,18 +1945,15 @@ function dropMarker() {
     return;
   }
 
-  const marker = {
-    label: `Marker ${state.markers.length + 1}`,
-    atMs: recordingElapsedMs(),
-    createdAt: new Date().toISOString()
-  };
+  const marker = pushRecordingMarker({
+    kind: 'manual',
+    label: `Marker ${state.markers.filter((item) => item.kind !== 'smart-moment').length + 1}`,
+    reason: 'manual'
+  });
 
-  state.markers.push(marker);
-  state.activeMarker = {
-    ...marker,
-    startedAt: performance.now()
-  };
-  setStatus(`${marker.label} dropped`);
+  if (marker) {
+    setStatus(`${marker.label} dropped`);
+  }
 }
 
 async function captureSnapshot() {
@@ -1971,6 +2030,7 @@ function cleanupRecording() {
   state.paused = false;
   state.markers = [];
   state.activeMarker = null;
+  state.lastAutoMarkerAt = -Infinity;
   stopPointerPolling();
   stopMicMeter();
   window.clearInterval(state.timerId);
@@ -2141,6 +2201,7 @@ for (const input of [
   elements.keyboardOverlay,
   elements.titleOverlay,
   elements.clickPulse,
+  elements.autoMarkers,
   elements.idleWide,
   elements.quality,
   elements.outputLayout,
@@ -2190,16 +2251,16 @@ window.addEventListener('click', (event) => {
     setFocusLock(x, y);
   }
 
-  if (!settings.clickPulse) {
-    return;
+  if (settings.clickPulse) {
+    state.pulse = {
+      active: true,
+      startedAt: performance.now(),
+      x,
+      y
+    };
   }
 
-  state.pulse = {
-    active: true,
-    startedAt: performance.now(),
-    x,
-    y
-  };
+  recordSmartMoment(settings, 'preview click', x, y);
 });
 
 loadPersistedSettings();

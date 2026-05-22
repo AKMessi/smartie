@@ -20,6 +20,7 @@ master feature toggle.
   - Keyboard overlay
   - Rendered take title overlays
   - Click/moment pulse
+  - Automatic smart chapter markers
   - Idle wide shot
   - Privacy blur
 - Microphone capture support.
@@ -29,7 +30,7 @@ master feature toggle.
 - Optional hide-while-recording mode to keep Smartie out of full-screen takes.
 - Auto-save mode with a selectable output folder for repeated takes.
 - Recent takes list with quick reveal actions.
-- Chapter markers with a shortcut and brief rendered marker overlay.
+- Chapter markers with a shortcut, automatic smart moments, and brief rendered marker overlay.
 - JSON sidecar metadata next to every saved video with markers and smart settings.
 - WebVTT chapter sidecars for marker import into players and editors.
 - PNG snapshot capture from the polished recording canvas.
