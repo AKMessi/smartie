@@ -76,6 +76,7 @@
             <label><input id="cursorTrail" type="checkbox" checked> Cursor trail</label>
             <label><input id="motionFocus" type="checkbox" checked> Motion focus</label>
             <label><input id="keyboardOverlay" type="checkbox" checked> Keyboard overlay</label>
+            <label><input id="titleOverlay" type="checkbox" checked> Title overlay</label>
             <label><input id="clickPulse" type="checkbox" checked> Moment pulse</label>
             <label><input id="idleWide" type="checkbox" checked> Idle wide shot</label>
             <label><input id="privacyBlur" type="checkbox"> Privacy blur</label>
@@ -100,6 +101,21 @@
             <span>Frame rate</span>
             <input id="fps" type="range" min="24" max="60" step="6" value="60">
             <output id="fpsValue">60 fps</output>
+          </label>
+
+          <label class="field">
+            <span>Take title</span>
+            <input id="takeTitle" type="text" maxlength="80" placeholder="Feature walkthrough">
+          </label>
+
+          <label class="field">
+            <span>Title duration</span>
+            <select id="titleDuration">
+              <option value="0">Lower third only</option>
+              <option value="2500" selected>2.5 seconds</option>
+              <option value="4000">4 seconds</option>
+              <option value="6000">6 seconds</option>
+            </select>
           </label>
 
           <label class="field inline">

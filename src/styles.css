@@ -422,17 +422,23 @@ canvas {
 }
 
 select,
+input[type="text"],
 input[type="range"] {
   width: 100%;
 }
 
-select {
+select,
+input[type="text"] {
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0 10px;
   color: var(--text);
   background: var(--panel-strong);
+}
+
+input[type="text"]::placeholder {
+  color: #6f7783;
 }
 
 input[type="checkbox"] {

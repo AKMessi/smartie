@@ -18,6 +18,7 @@ master feature toggle.
   - Cursor trail
   - Motion focus
   - Keyboard overlay
+  - Rendered take title overlays
   - Click/moment pulse
   - Idle wide shot
   - Privacy blur
@@ -31,6 +32,7 @@ master feature toggle.
 - JSON sidecar metadata next to every saved video with markers and smart settings.
 - WebVTT chapter sidecars for marker import into players and editors.
 - PNG snapshot capture from the polished recording canvas.
+- Take title naming with optional rendered title card and lower-third overlay.
 - Rendered privacy blur region for masking sensitive UI during demos.
 - Live capture health telemetry with FPS and dropped-frame estimates.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
@@ -93,6 +95,7 @@ npm run package:linux
 
 ## Notes
 
-Smartie currently exports WebM recordings. The smart effects are rendered into
-the video itself, so the output file includes the zoom/framing decisions instead
-of only previewing them in the app.
+Smartie always writes the primary recording as WebM and can also create a
+bundled-FFmpeg MP4 copy. The smart effects are rendered into the video itself,
+so the output file includes the zoom/framing/title decisions instead of only
+previewing them in the app.

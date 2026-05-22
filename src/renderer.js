@@ -32,12 +32,15 @@ const elements = {
   cursorTrail: document.querySelector('#cursorTrail'),
   motionFocus: document.querySelector('#motionFocus'),
   keyboardOverlay: document.querySelector('#keyboardOverlay'),
+  titleOverlay: document.querySelector('#titleOverlay'),
   clickPulse: document.querySelector('#clickPulse'),
   idleWide: document.querySelector('#idleWide'),
   privacyBlur: document.querySelector('#privacyBlur'),
   quality: document.querySelector('#quality'),
   fps: document.querySelector('#fps'),
   fpsValue: document.querySelector('#fpsValue'),
+  takeTitle: document.querySelector('#takeTitle'),
+  titleDuration: document.querySelector('#titleDuration'),
   microphone: document.querySelector('#microphone'),
   micMute: document.querySelector('#micMute'),
   micLevelBar: document.querySelector('#micLevelBar'),
@@ -169,11 +172,14 @@ const persistedSettingKeys = [
   'cursorTrail',
   'motionFocus',
   'keyboardOverlay',
+  'titleOverlay',
   'clickPulse',
   'idleWide',
   'privacyBlur',
   'quality',
   'fps',
+  'takeTitle',
+  'titleDuration',
   'microphone',
   'micGain',
   'cameraBubble',
@@ -260,6 +266,18 @@ function fileNameFromPath(filePath) {
   return filePath.split(/[\\/]/).pop() || filePath;
 }
 
+function cleanTitle(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+}
+
+function fileSafeTitle(value) {
+  return cleanTitle(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+}
+
 function renderRecentRecordings() {
   elements.recentList.textContent = '';
   elements.clearRecent.disabled = state.recentRecordings.length === 0;
@@ -278,13 +296,17 @@ function renderRecentRecordings() {
 
     const details = document.createElement('div');
     const title = document.createElement('strong');
-    title.textContent = fileNameFromPath(recording.filePath);
+    const fileName = fileNameFromPath(recording.filePath);
+    title.textContent = recording.takeTitle || fileName;
 
     const meta = document.createElement('span');
     const duration = formatTime(recording.durationMs || 0);
     const markerCount = recording.markers ? recording.markers.length : 0;
     const markerText = markerCount === 1 ? '1 marker' : `${markerCount} markers`;
-    meta.textContent = `${duration} - ${markerText} - ${recording.sourceName || 'Unknown source'}`;
+    const sourceText = recording.sourceName || 'Unknown source';
+    meta.textContent = recording.takeTitle
+      ? `${fileName} - ${duration} - ${markerText} - ${sourceText}`
+      : `${duration} - ${markerText} - ${sourceText}`;
 
     const reveal = document.createElement('button');
     reveal.type = 'button';
@@ -324,11 +346,14 @@ function getSettings() {
     cursorTrail: elements.cursorTrail.checked,
     motionFocus: elements.motionFocus.checked,
     keyboardOverlay: elements.keyboardOverlay.checked,
+    titleOverlay: elements.titleOverlay.checked,
     clickPulse: elements.clickPulse.checked,
     idleWide: elements.idleWide.checked,
     privacyBlur: elements.privacyBlur.checked,
     quality: elements.quality.value,
     fps: Number(elements.fps.value),
+    takeTitle: cleanTitle(elements.takeTitle.value),
+    titleDuration: Number(elements.titleDuration.value),
     microphone: elements.microphone.checked,
     micGain: Number(elements.micGain.value),
     cameraBubble: elements.cameraBubble.checked,
@@ -449,6 +474,7 @@ function syncControls() {
   elements.micMute.disabled = !elements.microphone.checked || !state.micStream;
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
+  elements.titleDuration.disabled = !elements.smartMaster.checked || !elements.titleOverlay.checked;
   elements.focusLock.disabled = !elements.smartMaster.checked || !elements.autoZoom.checked || elements.focusMode.value === 'wide';
   elements.clearFocusLock.disabled = !state.focusLock.active;
   elements.revealRecording.disabled = !state.lastRecordingPath;
@@ -1119,6 +1145,144 @@ function drawMarkerOverlay(settings) {
   ctx.restore();
 }
 
+function truncateCanvasText(context, text, maxWidth) {
+  if (context.measureText(text).width <= maxWidth) {
+    return text;
+  }
+
+  let next = text;
+  while (next.length > 1 && context.measureText(`${next}...`).width > maxWidth) {
+    next = next.slice(0, -1);
+  }
+
+  return `${next.trim()}...`;
+}
+
+function wrapCanvasText(context, text, maxWidth, maxLines) {
+  const words = cleanTitle(text).split(' ').filter(Boolean);
+  const lines = [];
+  let line = '';
+
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (context.measureText(candidate).width <= maxWidth) {
+      line = candidate;
+      continue;
+    }
+
+    if (line) {
+      lines.push(line);
+    } else {
+      lines.push(truncateCanvasText(context, word, maxWidth));
+    }
+
+    line = word;
+    if (lines.length === maxLines) {
+      break;
+    }
+  }
+
+  if (line && lines.length < maxLines) {
+    lines.push(truncateCanvasText(context, line, maxWidth));
+  }
+
+  if (lines.length === maxLines && words.join(' ') !== lines.join(' ')) {
+    lines[lines.length - 1] = truncateCanvasText(context, lines[lines.length - 1], maxWidth);
+  }
+
+  return lines;
+}
+
+function drawTitleOverlay(settings) {
+  const title = cleanTitle(settings.takeTitle);
+  if (!settings.smartMaster || !settings.titleOverlay || !title || !state.recording) {
+    return;
+  }
+
+  const elapsed = recordingElapsedMs();
+  const introDuration = Math.max(0, settings.titleDuration);
+  const showIntro = introDuration > 0 && elapsed < introDuration;
+  const lowerThirdUntil = introDuration + 4600;
+  if (!showIntro && elapsed > Math.max(5200, lowerThirdUntil)) {
+    return;
+  }
+
+  const width = canvas.width;
+  const height = canvas.height;
+  const margin = Math.max(40, width * 0.034);
+  const sourceName = cleanTitle(state.selectedSource ? state.selectedSource.name : 'Smartie recording');
+
+  ctx.save();
+
+  if (showIntro) {
+    const fadeIn = Math.min(1, elapsed / 420);
+    const fadeOut = Math.min(1, Math.max(0, (introDuration - elapsed) / 520));
+    ctx.globalAlpha = Math.min(fadeIn, fadeOut);
+    ctx.fillStyle = 'rgba(7, 8, 10, 0.72)';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = 'rgba(66, 214, 198, 0.18)';
+    ctx.fillRect(0, Math.round(height * 0.64), width, Math.max(6, height * 0.006));
+
+    const titleSize = Math.round(Math.min(76, Math.max(40, width * 0.042)));
+    const lineHeight = Math.round(titleSize * 1.12);
+    const y = height * 0.38;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = `800 ${Math.round(Math.max(22, width * 0.014))}px system-ui, sans-serif`;
+    ctx.fillStyle = '#42d6c6';
+    ctx.fillText('SMARTIE TAKE', margin, y - lineHeight * 1.35);
+
+    ctx.font = `800 ${titleSize}px system-ui, sans-serif`;
+    ctx.fillStyle = '#f4f1ea';
+    const titleLines = wrapCanvasText(ctx, title, width - margin * 2, 2);
+    titleLines.forEach((line, index) => {
+      ctx.fillText(line, margin, y + lineHeight * index);
+    });
+
+    ctx.font = `600 ${Math.round(Math.max(24, width * 0.016))}px system-ui, sans-serif`;
+    ctx.fillStyle = 'rgba(244, 241, 234, 0.78)';
+    ctx.fillText(truncateCanvasText(ctx, sourceName, width - margin * 2), margin, y + lineHeight * titleLines.length + 28);
+    ctx.restore();
+    return;
+  }
+
+  const fade = Math.min(1, Math.max(0, (lowerThirdUntil - elapsed) / 520));
+  const x = margin;
+  const boxHeight = Math.max(86, height * 0.092);
+  const y = height - boxHeight - margin;
+  const paddingX = Math.max(24, width * 0.018);
+  const maxTextWidth = width * 0.46;
+
+  ctx.globalAlpha = fade;
+  ctx.font = `800 ${Math.round(Math.max(26, width * 0.017))}px system-ui, sans-serif`;
+  const titleText = truncateCanvasText(ctx, title, maxTextWidth);
+  ctx.font = `600 ${Math.round(Math.max(17, width * 0.01))}px system-ui, sans-serif`;
+  const sourceText = truncateCanvasText(ctx, sourceName, maxTextWidth);
+  const textWidth = Math.max(
+    ctx.measureText(titleText).width,
+    ctx.measureText(sourceText).width
+  );
+  const boxWidth = Math.min(width - x * 2, textWidth + paddingX * 2);
+
+  ctx.fillStyle = 'rgba(16, 17, 20, 0.84)';
+  ctx.strokeStyle = 'rgba(66, 214, 198, 0.86)';
+  ctx.lineWidth = Math.max(2, width * 0.0012);
+  roundRect(ctx, x, y, boxWidth, boxHeight, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = `800 ${Math.round(Math.max(26, width * 0.017))}px system-ui, sans-serif`;
+  ctx.fillStyle = '#f4f1ea';
+  ctx.fillText(titleText, x + paddingX, y + boxHeight * 0.42);
+
+  ctx.font = `600 ${Math.round(Math.max(17, width * 0.01))}px system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(244, 241, 234, 0.68)';
+  ctx.fillText(sourceText, x + paddingX, y + boxHeight * 0.72);
+  ctx.restore();
+}
+
 function drawCameraBubble(settings) {
   if (!settings.cameraBubble || !state.cameraStream || cameraVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
     return;
@@ -1190,6 +1354,7 @@ function drawLoop(timestamp = performance.now()) {
     drawMarkerOverlay(settings);
     drawCameraBubble(settings);
     drawKeyboardOverlay(settings);
+    drawTitleOverlay(settings);
     elements.emptyState.hidden = true;
   } else {
     drawWaitingFrame();
@@ -1320,9 +1485,10 @@ function recorderMimeType() {
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
 }
 
-function buildSuggestedName() {
+function buildSuggestedName(settings = getSettings()) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  return `smartie-${stamp}.webm`;
+  const title = fileSafeTitle(settings.takeTitle);
+  return `smartie-${title ? `${title}-` : ''}${stamp}.webm`;
 }
 
 function buildSnapshotName() {
@@ -1358,6 +1524,11 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       : null,
     durationMs,
     duration: formatTime(durationMs),
+    take: {
+      title: settings.takeTitle,
+      titleOverlay: settings.titleOverlay,
+      titleDurationMs: settings.titleDuration
+    },
     markers,
     smartStack: {
       enabled: settings.smartMaster,
@@ -1366,6 +1537,7 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       cursorTrail: settings.cursorTrail,
       motionFocus: settings.motionFocus,
       keyboardOverlay: settings.keyboardOverlay,
+      titleOverlay: settings.titleOverlay,
       clickPulse: settings.clickPulse,
       idleWide: settings.idleWide,
       privacyBlur: settings.privacyBlur,
@@ -1662,7 +1834,7 @@ async function saveRecording() {
   const settings = getSettings();
   const durationMs = recordingElapsedMs();
   const markers = state.markers.slice();
-  const suggestedName = buildSuggestedName();
+  const suggestedName = buildSuggestedName(settings);
   const metadata = buildRecordingMetadata({
     suggestedName,
     durationMs,
@@ -1694,6 +1866,7 @@ async function saveRecording() {
       chaptersPath: result.chaptersPath,
       mp4Path: result.mp4Path,
       sourceName: state.selectedSource ? state.selectedSource.name : null,
+      takeTitle: settings.takeTitle,
       durationMs,
       markers,
       createdAt: new Date().toISOString()
@@ -1768,10 +1941,13 @@ for (const input of [
   elements.cursorTrail,
   elements.motionFocus,
   elements.keyboardOverlay,
+  elements.titleOverlay,
   elements.clickPulse,
   elements.idleWide,
   elements.quality,
   elements.fps,
+  elements.takeTitle,
+  elements.titleDuration,
   elements.microphone,
   elements.micGain,
   elements.cameraBubble,
