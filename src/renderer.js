@@ -31,6 +31,11 @@ const elements = {
   fps: document.querySelector('#fps'),
   fpsValue: document.querySelector('#fpsValue'),
   microphone: document.querySelector('#microphone'),
+  micMute: document.querySelector('#micMute'),
+  micLevelBar: document.querySelector('#micLevelBar'),
+  micLevelText: document.querySelector('#micLevelText'),
+  micGain: document.querySelector('#micGain'),
+  micGainValue: document.querySelector('#micGainValue'),
   cameraBubble: document.querySelector('#cameraBubble'),
   cameraPosition: document.querySelector('#cameraPosition'),
   countdownSeconds: document.querySelector('#countdownSeconds'),
@@ -48,7 +53,14 @@ const state = {
   displays: [],
   selectedSource: null,
   captureStream: null,
+  micInputStream: null,
   micStream: null,
+  audioContext: null,
+  micSource: null,
+  micGainNode: null,
+  micAnalyser: null,
+  micMeterId: null,
+  micMuted: false,
   cameraStream: null,
   canvasStream: null,
   mediaRecorder: null,
@@ -125,6 +137,7 @@ const persistedSettingKeys = [
   'quality',
   'fps',
   'microphone',
+  'micGain',
   'cameraBubble',
   'cameraPosition',
   'countdownSeconds',
@@ -269,6 +282,7 @@ function getSettings() {
     quality: elements.quality.value,
     fps: Number(elements.fps.value),
     microphone: elements.microphone.checked,
+    micGain: Number(elements.micGain.value),
     cameraBubble: elements.cameraBubble.checked,
     cameraPosition: elements.cameraPosition.value,
     countdownSeconds: Number(elements.countdownSeconds.value),
@@ -368,6 +382,9 @@ function syncControls() {
   elements.cancelRecording.disabled = !state.recording;
   elements.refreshSources.disabled = state.recording;
   elements.chooseOutputFolder.disabled = state.recording;
+  elements.micMute.disabled = !elements.microphone.checked || !state.micStream;
+  elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
+  elements.micMute.classList.toggle('active', state.micMuted);
   elements.revealRecording.disabled = !state.lastRecordingPath;
 
   for (const input of document.querySelectorAll('.toggle-grid input')) {
@@ -375,9 +392,80 @@ function syncControls() {
   }
 
   elements.fpsValue.textContent = `${elements.fps.value} fps`;
+  elements.micGainValue.textContent = `${Math.round(Number(elements.micGain.value) * 100)}%`;
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
   elements.smoothingValue.textContent = `${Math.round(Number(elements.smoothing.value) * 100)}%`;
   elements.outputFolder.textContent = state.outputDir || 'Default Videos folder';
+
+  if (!state.micStream) {
+    resetMicMeter(elements.microphone.checked ? (state.micMuted ? 'Muted' : 'Mic armed') : 'Mic off');
+  }
+}
+
+function resetMicMeter(label = 'Mic off') {
+  elements.micLevelBar.style.width = '0%';
+  elements.micLevelText.textContent = label;
+}
+
+function applyMicSettings() {
+  if (state.micGainNode) {
+    state.micGainNode.gain.value = state.micMuted ? 0 : Number(elements.micGain.value);
+  }
+
+  if (state.micInputStream) {
+    for (const track of state.micInputStream.getAudioTracks()) {
+      track.enabled = true;
+    }
+  }
+}
+
+function startMicMeter() {
+  stopMicMeter();
+
+  if (!state.micAnalyser) {
+    resetMicMeter(state.micMuted ? 'Muted' : 'Mic live');
+    return;
+  }
+
+  const samples = new Uint8Array(state.micAnalyser.fftSize);
+  const tick = () => {
+    state.micAnalyser.getByteTimeDomainData(samples);
+
+    let sum = 0;
+    for (const sample of samples) {
+      const centered = (sample - 128) / 128;
+      sum += centered * centered;
+    }
+
+    const rms = Math.sqrt(sum / samples.length);
+    const level = state.micMuted ? 0 : Math.min(1, rms * 5.4);
+    elements.micLevelBar.style.width = `${Math.round(level * 100)}%`;
+    elements.micLevelText.textContent = state.micMuted
+      ? 'Muted'
+      : `${Math.round(level * 100)}% signal`;
+
+    state.micMeterId = requestAnimationFrame(tick);
+  };
+
+  state.micMeterId = requestAnimationFrame(tick);
+}
+
+function stopMicMeter() {
+  if (state.micMeterId) {
+    cancelAnimationFrame(state.micMeterId);
+    state.micMeterId = null;
+  }
+}
+
+function toggleMicMute() {
+  if (!elements.microphone.checked) {
+    return;
+  }
+
+  state.micMuted = !state.micMuted;
+  applyMicSettings();
+  resetMicMeter(state.micMuted ? 'Muted' : state.micStream ? 'Mic live' : 'Mic armed');
+  syncControls();
 }
 
 async function chooseOutputFolder() {
@@ -802,7 +890,7 @@ async function openMicrophoneStream() {
     return null;
   }
 
-  return navigator.mediaDevices.getUserMedia({
+  const inputStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
@@ -810,6 +898,29 @@ async function openMicrophoneStream() {
     },
     video: false
   });
+
+  state.micInputStream = inputStream;
+
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    state.audioContext = new AudioContext();
+    state.micSource = state.audioContext.createMediaStreamSource(inputStream);
+    state.micGainNode = state.audioContext.createGain();
+    state.micAnalyser = state.audioContext.createAnalyser();
+    state.micAnalyser.fftSize = 512;
+
+    const destination = state.audioContext.createMediaStreamDestination();
+    state.micSource.connect(state.micGainNode);
+    state.micGainNode.connect(destination);
+    state.micGainNode.connect(state.micAnalyser);
+    applyMicSettings();
+    startMicMeter();
+    return destination.stream;
+  } catch (error) {
+    console.warn('Falling back to direct microphone capture.', error);
+    resetMicMeter('Mic live');
+    return inputStream;
+  }
 }
 
 async function openCameraStream() {
@@ -1014,6 +1125,8 @@ function handleGlobalShortcut(action) {
     cancelRecording();
   } else if (action === 'toggle-smart-stack') {
     toggleSmartStack();
+  } else if (action === 'toggle-mic-mute') {
+    toggleMicMute();
   }
 }
 
@@ -1031,14 +1144,24 @@ function cleanupRecording() {
   state.recording = false;
   state.paused = false;
   stopPointerPolling();
+  stopMicMeter();
   window.clearInterval(state.timerId);
   state.timerId = null;
   stopStream(state.captureStream);
+  stopStream(state.micInputStream);
   stopStream(state.micStream);
   stopStream(state.cameraStream);
   stopStream(state.canvasStream);
   state.captureStream = null;
+  state.micInputStream = null;
   state.micStream = null;
+  state.micSource = null;
+  state.micGainNode = null;
+  state.micAnalyser = null;
+  if (state.audioContext) {
+    state.audioContext.close().catch((error) => console.warn('Could not close audio context.', error));
+    state.audioContext = null;
+  }
   state.cameraStream = null;
   state.canvasStream = null;
   state.mediaRecorder = null;
@@ -1046,6 +1169,7 @@ function cleanupRecording() {
   cameraVideo.srcObject = null;
   elements.recordingDot.classList.remove('active');
   elements.emptyState.hidden = false;
+  resetMicMeter(elements.microphone.checked ? 'Mic armed' : 'Mic off');
   resetHealth();
 }
 
@@ -1143,6 +1267,7 @@ elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
 elements.chooseOutputFolder.addEventListener('click', chooseOutputFolder);
 elements.clearRecent.addEventListener('click', clearRecentRecordings);
+elements.micMute.addEventListener('click', toggleMicMute);
 window.smartie.onShortcut(handleGlobalShortcut);
 
 for (const input of [
@@ -1156,6 +1281,7 @@ for (const input of [
   elements.quality,
   elements.fps,
   elements.microphone,
+  elements.micGain,
   elements.cameraBubble,
   elements.cameraPosition,
   elements.countdownSeconds,
@@ -1164,8 +1290,10 @@ for (const input of [
   elements.smoothing
 ]) {
   input.addEventListener('input', syncControls);
+  input.addEventListener('input', applyMicSettings);
   input.addEventListener('input', scheduleSaveSettings);
   input.addEventListener('change', syncControls);
+  input.addEventListener('change', applyMicSettings);
   input.addEventListener('change', scheduleSaveSettings);
 }
 
@@ -1190,6 +1318,7 @@ renderRecentRecordings();
 resizeCanvasForProfile();
 drawWaitingFrame();
 renderHealth();
+resetMicMeter(elements.microphone.checked ? 'Mic armed' : 'Mic off');
 syncControls();
 refreshSources().catch((error) => {
   console.error(error);

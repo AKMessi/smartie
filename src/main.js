@@ -30,6 +30,11 @@ const recorderShortcuts = [
     action: 'toggle-smart-stack',
     accelerator: 'CommandOrControl+Alt+S',
     label: 'Toggle smart features'
+  },
+  {
+    action: 'toggle-mic-mute',
+    accelerator: 'CommandOrControl+Alt+M',
+    label: 'Mute or unmute microphone'
   }
 ];
 

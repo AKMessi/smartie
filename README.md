@@ -19,6 +19,7 @@ master feature toggle.
   - Click/moment pulse
   - Idle wide shot
 - Microphone capture support.
+- Live mic level meter with gain control and recording-safe mute.
 - Optional mirrored webcam bubble with selectable corner placement.
 - Auto-save mode with a selectable output folder for repeated takes.
 - Recent takes list with quick reveal actions.
@@ -58,6 +59,7 @@ root-owned.
 - `Ctrl+Alt+P`: pause or resume recording.
 - `Ctrl+Alt+X`: discard the active recording.
 - `Ctrl+Alt+S`: toggle Smart Stack features.
+- `Ctrl+Alt+M`: mute or unmute microphone.
 
 On some desktop environments a shortcut can fail to register if another app or
 the OS already owns it.

@@ -103,6 +103,23 @@
             <input id="microphone" type="checkbox">
           </label>
 
+          <div class="field">
+            <span>Mic level</span>
+            <div class="meter-row">
+              <div class="level-meter" aria-label="Microphone level">
+                <span id="micLevelBar"></span>
+              </div>
+              <button id="micMute" type="button" class="mini-button" disabled>Mute</button>
+            </div>
+            <output id="micLevelText">Mic off</output>
+          </div>
+
+          <label class="field">
+            <span>Mic gain</span>
+            <input id="micGain" type="range" min="0" max="2" step="0.05" value="1">
+            <output id="micGainValue">100%</output>
+          </label>
+
           <label class="field inline">
             <span>Camera bubble</span>
             <input id="cameraBubble" type="checkbox">
