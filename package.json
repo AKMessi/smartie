@@ -1,0 +1,23 @@
+{
+  "name": "smartie",
+  "version": "0.1.0",
+  "description": "A smart screen recorder for polished demo videos with smooth auto zoom and feature toggles.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron --no-sandbox .",
+    "smoke": "electron --no-sandbox . --smoke-test",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node scripts/smoke-check.mjs"
+  },
+  "keywords": [
+    "screen-recorder",
+    "electron",
+    "demo",
+    "smart-zoom",
+    "smartie"
+  ],
+  "author": "AKMessi",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^42.2.0"
+  }
+}

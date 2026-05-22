@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; media-src 'self' blob:; style-src 'self'; script-src 'self';">
+    <title>Smartie</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="studio">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Smart screen recorder</p>
+            <h1>Smartie</h1>
+          </div>
+          <div class="status-strip">
+            <span id="recordingDot" class="recording-dot"></span>
+            <span id="statusText">Ready</span>
+            <strong id="timer">00:00</strong>
+          </div>
+        </header>
+
+        <div class="preview-wrap">
+          <canvas id="previewCanvas" width="1920" height="1080" aria-label="Recording preview"></canvas>
+          <div id="emptyState" class="empty-state">
+            <strong>Select a source</strong>
+            <span>Pick a screen or window to arm the recorder.</span>
+          </div>
+          <div id="countdown" class="countdown" hidden>3</div>
+        </div>
+
+        <footer class="transport">
+          <button id="refreshSources" type="button" class="ghost">Refresh Sources</button>
+          <button id="startRecording" type="button" class="primary">Start Recording</button>
+          <button id="stopRecording" type="button" class="danger" disabled>Stop</button>
+          <button id="revealRecording" type="button" class="ghost" disabled>Reveal Last</button>
+        </footer>
+      </section>
+
+      <aside class="control-panel">
+        <section class="panel-section">
+          <div class="section-heading">
+            <h2>Source</h2>
+            <span id="sourceCount">0</span>
+          </div>
+          <div id="sourceList" class="source-list"></div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <h2>Smart Stack</h2>
+            <label class="switch">
+              <input id="smartMaster" type="checkbox" checked>
+              <span></span>
+            </label>
+          </div>
+
+          <div class="toggle-grid">
+            <label><input id="autoZoom" type="checkbox" checked> Auto zoom</label>
+            <label><input id="cursorSpotlight" type="checkbox" checked> Cursor spotlight</label>
+            <label><input id="motionFocus" type="checkbox" checked> Motion focus</label>
+            <label><input id="keyboardOverlay" type="checkbox" checked> Keyboard overlay</label>
+            <label><input id="clickPulse" type="checkbox" checked> Moment pulse</label>
+            <label><input id="idleWide" type="checkbox" checked> Idle wide shot</label>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <h2>Capture</h2>
+          </div>
+
+          <label class="field">
+            <span>Quality</span>
+            <select id="quality">
+              <option value="balanced" selected>Balanced</option>
+              <option value="crisp">Crisp</option>
+              <option value="cinematic">Cinematic</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Frame rate</span>
+            <input id="fps" type="range" min="24" max="60" step="6" value="60">
+            <output id="fpsValue">60 fps</output>
+          </label>
+
+          <label class="field inline">
+            <span>Microphone</span>
+            <input id="microphone" type="checkbox">
+          </label>
+
+          <label class="field">
+            <span>Countdown</span>
+            <select id="countdownSeconds">
+              <option value="0">None</option>
+              <option value="3" selected>3 seconds</option>
+              <option value="5">5 seconds</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <h2>Framing</h2>
+          </div>
+
+          <label class="field">
+            <span>Zoom strength</span>
+            <input id="zoomStrength" type="range" min="1.1" max="2.4" step="0.1" value="1.7">
+            <output id="zoomStrengthValue">1.7x</output>
+          </label>
+
+          <label class="field">
+            <span>Smoothing</span>
+            <input id="smoothing" type="range" min="0.04" max="0.22" step="0.01" value="0.11">
+            <output id="smoothingValue">11%</output>
+          </label>
+        </section>
+      </aside>
+    </main>
+
+    <video id="captureVideo" muted playsinline></video>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

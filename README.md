@@ -1,1 +1,59 @@
-# smartie
+# Smartie
+
+Smartie is a Linux-compatible smart screen recorder for polished demo videos.
+It records a selected screen or window through Electron, renders the capture
+through a real-time canvas pipeline, and can add smooth smart zoom, cursor
+spotlight, motion emphasis, keyboard overlays, and recording polish with one
+master feature toggle.
+
+## Current Features
+
+- Screen and window source picker with live thumbnails.
+- Canvas-based recording pipeline for real-time effects.
+- Smooth smart zoom that follows the cursor and eases back out when idle.
+- Master Smart Features toggle plus individual toggles for:
+  - Auto zoom
+  - Cursor spotlight
+  - Motion focus
+  - Keyboard overlay
+  - Click/moment pulse
+  - Idle wide shot
+- Microphone capture support.
+- Quality presets, frame-rate control, countdown, elapsed timer, and local WebM
+  export.
+- Linux desktop support through Electron desktop capture APIs.
+
+## Requirements
+
+- Node.js 22 or newer.
+- npm 9 or newer.
+- Linux desktop session with screen capture permission available to Electron.
+
+## Install
+
+```bash
+npm install
+```
+
+## Run
+
+```bash
+npm start
+```
+
+The development launcher passes Electron `--no-sandbox` so it can run from
+mounted Linux drives where Chromium's setuid sandbox helper cannot be made
+root-owned.
+
+## Verify
+
+```bash
+npm run check
+npm run smoke
+```
+
+## Notes
+
+Smartie currently exports WebM recordings. The smart effects are rendered into
+the video itself, so the output file includes the zoom/framing decisions instead
+of only previewing them in the app.
