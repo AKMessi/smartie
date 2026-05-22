@@ -176,6 +176,7 @@
             <span>Focus mode</span>
             <select id="focusMode">
               <option value="cursor" selected>Follow cursor</option>
+              <option value="motion">Motion aware</option>
               <option value="click-lock">Click to lock</option>
               <option value="wide">Wide shot</option>
             </select>
@@ -194,6 +195,12 @@
             <span>Zoom strength</span>
             <input id="zoomStrength" type="range" min="1.1" max="2.4" step="0.1" value="1.7">
             <output id="zoomStrengthValue">1.7x</output>
+          </label>
+
+          <label class="field">
+            <span>Motion sensitivity</span>
+            <input id="motionSensitivity" type="range" min="8" max="42" step="1" value="22">
+            <output id="motionSensitivityValue">22</output>
           </label>
 
           <label class="field">

@@ -11,7 +11,7 @@ master feature toggle.
 - Screen and window source picker with live thumbnails.
 - Canvas-based recording pipeline for real-time effects.
 - Smooth smart zoom that follows the cursor and eases back out when idle.
-- Smart focus modes for cursor follow, click-to-lock focus, and forced wide shot.
+- Smart focus modes for cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Master Smart Features toggle plus individual toggles for:
   - Auto zoom
   - Cursor spotlight

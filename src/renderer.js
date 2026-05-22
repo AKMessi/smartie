@@ -2,6 +2,10 @@ const canvas = document.querySelector('#previewCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 const video = document.querySelector('#captureVideo');
 const cameraVideo = document.querySelector('#cameraVideo');
+const motionCanvas = document.createElement('canvas');
+motionCanvas.width = 72;
+motionCanvas.height = 40;
+const motionCtx = motionCanvas.getContext('2d', { willReadFrequently: true });
 
 const elements = {
   sourceList: document.querySelector('#sourceList'),
@@ -50,6 +54,8 @@ const elements = {
   focusStatus: document.querySelector('#focusStatus'),
   zoomStrength: document.querySelector('#zoomStrength'),
   zoomStrengthValue: document.querySelector('#zoomStrengthValue'),
+  motionSensitivity: document.querySelector('#motionSensitivity'),
+  motionSensitivityValue: document.querySelector('#motionSensitivityValue'),
   smoothing: document.querySelector('#smoothing'),
   smoothingValue: document.querySelector('#smoothingValue')
 };
@@ -97,6 +103,14 @@ const state = {
     active: false,
     x: 0.5,
     y: 0.5
+  },
+  motionTarget: {
+    x: 0.5,
+    y: 0.5,
+    strength: 0,
+    lastSeenAt: 0,
+    lastScanAt: 0,
+    previousFrame: null
   },
   pointer: {
     screenX: 0,
@@ -159,6 +173,7 @@ const persistedSettingKeys = [
   'saveMode',
   'focusMode',
   'zoomStrength',
+  'motionSensitivity',
   'smoothing'
 ];
 
@@ -309,6 +324,7 @@ function getSettings() {
     outputDir: state.outputDir,
     focusMode: elements.focusMode.value,
     zoomStrength: Number(elements.zoomStrength.value),
+    motionSensitivity: Number(elements.motionSensitivity.value),
     smoothing: Number(elements.smoothing.value)
   };
 }
@@ -425,6 +441,7 @@ function syncControls() {
   elements.fpsValue.textContent = `${elements.fps.value} fps`;
   elements.micGainValue.textContent = `${Math.round(Number(elements.micGain.value) * 100)}%`;
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
+  elements.motionSensitivityValue.textContent = elements.motionSensitivity.value;
   elements.smoothingValue.textContent = `${Math.round(Number(elements.smoothing.value) * 100)}%`;
   elements.outputFolder.textContent = state.outputDir || 'Default Videos folder';
   renderFocusStatus();
@@ -439,6 +456,11 @@ function renderFocusStatus() {
     elements.focusStatus.textContent = 'Holding wide shot';
   } else if (state.focusLock.active) {
     elements.focusStatus.textContent = `Locked ${Math.round(state.focusLock.x * 100)}%, ${Math.round(state.focusLock.y * 100)}%`;
+  } else if (elements.focusMode.value === 'motion') {
+    const age = performance.now() - state.motionTarget.lastSeenAt;
+    elements.focusStatus.textContent = age < 1200
+      ? `Motion ${Math.round(state.motionTarget.x * 100)}%, ${Math.round(state.motionTarget.y * 100)}%`
+      : 'Watching for motion';
   } else if (elements.focusMode.value === 'click-lock') {
     elements.focusStatus.textContent = 'Preview click arms focus';
   } else {
@@ -692,6 +714,64 @@ function mapPointerToCapture(pointerPayload) {
   }
 }
 
+function scanMotionTarget(settings, timestamp) {
+  const shouldScan = settings.smartMaster
+    && settings.autoZoom
+    && settings.motionFocus
+    && settings.focusMode === 'motion'
+    && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+
+  if (!shouldScan || timestamp - state.motionTarget.lastScanAt < 180) {
+    return;
+  }
+
+  state.motionTarget.lastScanAt = timestamp;
+  motionCtx.drawImage(video, 0, 0, motionCanvas.width, motionCanvas.height);
+  const frame = motionCtx.getImageData(0, 0, motionCanvas.width, motionCanvas.height).data;
+
+  if (!state.motionTarget.previousFrame) {
+    state.motionTarget.previousFrame = new Uint8ClampedArray(frame);
+    return;
+  }
+
+  const threshold = settings.motionSensitivity;
+  let weight = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+
+  for (let y = 0; y < motionCanvas.height; y += 1) {
+    for (let x = 0; x < motionCanvas.width; x += 1) {
+      const index = (y * motionCanvas.width + x) * 4;
+      const current = (frame[index] + frame[index + 1] + frame[index + 2]) / 3;
+      const previous = (
+        state.motionTarget.previousFrame[index]
+        + state.motionTarget.previousFrame[index + 1]
+        + state.motionTarget.previousFrame[index + 2]
+      ) / 3;
+      const diff = Math.abs(current - previous);
+
+      if (diff > threshold) {
+        const contribution = diff - threshold;
+        weight += contribution;
+        weightedX += (x + 0.5) * contribution;
+        weightedY += (y + 0.5) * contribution;
+      }
+    }
+  }
+
+  state.motionTarget.previousFrame.set(frame);
+
+  if (weight < 260) {
+    state.motionTarget.strength *= 0.82;
+    return;
+  }
+
+  state.motionTarget.x = weightedX / weight / motionCanvas.width;
+  state.motionTarget.y = weightedY / weight / motionCanvas.height;
+  state.motionTarget.strength = Math.min(1, weight / 28000);
+  state.motionTarget.lastSeenAt = timestamp;
+}
+
 function startPointerPolling() {
   stopPointerPolling();
   state.pointerPollId = window.setInterval(async () => {
@@ -743,6 +823,7 @@ function smartTarget(settings) {
   const hasSmartZoom = settings.smartMaster && settings.autoZoom;
   const forcedWide = settings.focusMode === 'wide';
   const hasFocusLock = state.focusLock.active && !forcedWide;
+  const hasMotionTarget = settings.focusMode === 'motion' && now - state.motionTarget.lastSeenAt < 1500 && !forcedWide;
   const shouldIdleWide = settings.smartMaster && settings.idleWide && !hasFocusLock && idleFor > 1700;
   const activeMotion = state.pointer.velocity > 0.003 || idleFor < 1300;
   let scale = 1;
@@ -753,6 +834,10 @@ function smartTarget(settings) {
     scale = settings.zoomStrength;
     x = state.focusLock.x;
     y = state.focusLock.y;
+  } else if (hasMotionTarget) {
+    scale = settings.zoomStrength + Math.min(0.3, state.motionTarget.strength * 0.45);
+    x = state.motionTarget.x;
+    y = state.motionTarget.y;
   } else if (hasSmartZoom && activeMotion && !forcedWide) {
     const motionBoost = Math.min(0.28, state.pointer.velocity * 4.2);
     scale = settings.zoomStrength + motionBoost;
@@ -983,6 +1068,7 @@ function drawLoop(timestamp = performance.now()) {
   }
 
   const settings = getSettings();
+  scanMotionTarget(settings, timestamp);
   updateFrameHealth(timestamp, settings.fps);
   easeFrame(settings);
 
@@ -1154,6 +1240,7 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       idleWide: settings.idleWide,
       focusMode: settings.focusMode,
       zoomStrength: settings.zoomStrength,
+      motionSensitivity: settings.motionSensitivity,
       smoothing: settings.smoothing
     },
     capture: {
@@ -1225,6 +1312,8 @@ async function startRecording() {
     state.timerId = window.setInterval(updateTimer, 250);
     state.drawing = true;
     state.frame = { scale: 1, x: 0.5, y: 0.5 };
+    state.motionTarget.previousFrame = null;
+    state.motionTarget.strength = 0;
     startPointerPolling();
     requestAnimationFrame(drawLoop);
 
@@ -1526,6 +1615,7 @@ for (const input of [
   elements.saveMode,
   elements.focusMode,
   elements.zoomStrength,
+  elements.motionSensitivity,
   elements.smoothing
 ]) {
   input.addEventListener('input', syncControls);

@@ -67,6 +67,8 @@ for (const feature of [
   'focusMode',
   'setFocusLock',
   'toggleFocusLock',
+  'scanMotionTarget',
+  'motionSensitivity',
   'dropMarker',
   'drawMarkerOverlay',
   'hideWhileRecording',
