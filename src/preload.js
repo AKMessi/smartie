@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('smartie', {
   getDefaultOutputDir: () => ipcRenderer.invoke('smartie:get-default-output-dir'),
   chooseOutputDir: () => ipcRenderer.invoke('smartie:choose-output-dir'),
   getShortcuts: () => ipcRenderer.invoke('smartie:get-shortcuts'),
+  setWindowHidden: (hidden) => ipcRenderer.invoke('smartie:set-window-hidden', hidden),
+  toggleWindowVisibility: () => ipcRenderer.invoke('smartie:toggle-window-visibility'),
   onShortcut: (callback) => {
     const listener = (_event, action) => callback(action);
     ipcRenderer.on('smartie:shortcut', listener);

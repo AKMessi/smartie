@@ -22,6 +22,7 @@ master feature toggle.
 - Microphone capture support.
 - Live mic level meter with gain control and recording-safe mute.
 - Optional mirrored webcam bubble with selectable corner placement.
+- Optional hide-while-recording mode to keep Smartie out of full-screen takes.
 - Auto-save mode with a selectable output folder for repeated takes.
 - Recent takes list with quick reveal actions.
 - Chapter markers with a shortcut and brief rendered marker overlay.
@@ -64,6 +65,7 @@ root-owned.
 - `Ctrl+Alt+M`: mute or unmute microphone.
 - `Ctrl+Alt+F`: lock or release smart focus.
 - `Ctrl+Alt+K`: drop a chapter marker.
+- `Ctrl+Alt+H`: show or hide Smartie.
 
 On some desktop environments a shortcut can fail to register if another app or
 the OS already owns it.

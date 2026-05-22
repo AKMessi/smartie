@@ -68,7 +68,10 @@ for (const feature of [
   'setFocusLock',
   'toggleFocusLock',
   'dropMarker',
-  'drawMarkerOverlay'
+  'drawMarkerOverlay',
+  'hideWhileRecording',
+  'hideWindowForRecording',
+  'restoreRecordingWindow'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);
@@ -83,7 +86,7 @@ for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGloba
 }
 
 const preload = readFileSync(join(root, 'src/preload.js'), 'utf8');
-for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir']) {
+for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir', 'setWindowHidden', 'toggleWindowVisibility']) {
   if (!preload.includes(feature)) {
     throw new Error(`Preload is missing shortcut bridge: ${feature}`);
   }

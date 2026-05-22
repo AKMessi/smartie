@@ -45,6 +45,11 @@ const recorderShortcuts = [
     action: 'drop-marker',
     accelerator: 'CommandOrControl+Alt+K',
     label: 'Drop chapter marker'
+  },
+  {
+    action: 'toggle-window-visibility',
+    accelerator: 'CommandOrControl+Alt+H',
+    label: 'Show or hide Smartie'
   }
 ];
 
@@ -67,6 +72,46 @@ function registerGlobalShortcuts() {
       registered
     };
   });
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+
+  mainWindow.focus();
+}
+
+function setMainWindowHidden(hidden) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+
+  if (hidden) {
+    mainWindow.hide();
+  } else {
+    showMainWindow();
+  }
+
+  return !mainWindow.isVisible();
+}
+
+function toggleMainWindowVisibility() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+
+  if (mainWindow.isVisible()) {
+    mainWindow.hide();
+    return true;
+  }
+
+  showMainWindow();
+  return false;
 }
 
 function createWindow() {
@@ -188,6 +233,8 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
     };
   }
 
+  showMainWindow();
+
   const defaultPath = suggestedName
     ? path.join(outputDir || defaultRecordingDirectory(), suggestedName)
     : defaultRecordingPath();
@@ -237,6 +284,10 @@ ipcMain.handle('smartie:choose-output-dir', async () => {
 });
 
 ipcMain.handle('smartie:get-shortcuts', () => shortcutStatuses);
+
+ipcMain.handle('smartie:set-window-hidden', (_event, hidden) => setMainWindowHidden(Boolean(hidden)));
+
+ipcMain.handle('smartie:toggle-window-visibility', () => toggleMainWindowVisibility());
 
 app.whenReady().then(() => {
   app.setName(APP_TITLE);

@@ -38,6 +38,7 @@ const elements = {
   micGain: document.querySelector('#micGain'),
   micGainValue: document.querySelector('#micGainValue'),
   cameraBubble: document.querySelector('#cameraBubble'),
+  hideWhileRecording: document.querySelector('#hideWhileRecording'),
   cameraPosition: document.querySelector('#cameraPosition'),
   countdownSeconds: document.querySelector('#countdownSeconds'),
   saveMode: document.querySelector('#saveMode'),
@@ -84,6 +85,7 @@ const state = {
   outputDir: null,
   markers: [],
   activeMarker: null,
+  windowHiddenForRecording: false,
   keys: [],
   pulse: {
     active: false,
@@ -151,6 +153,7 @@ const persistedSettingKeys = [
   'microphone',
   'micGain',
   'cameraBubble',
+  'hideWhileRecording',
   'cameraPosition',
   'countdownSeconds',
   'saveMode',
@@ -299,6 +302,7 @@ function getSettings() {
     microphone: elements.microphone.checked,
     micGain: Number(elements.micGain.value),
     cameraBubble: elements.cameraBubble.checked,
+    hideWhileRecording: elements.hideWhileRecording.checked,
     cameraPosition: elements.cameraPosition.value,
     countdownSeconds: Number(elements.countdownSeconds.value),
     saveMode: elements.saveMode.value,
@@ -554,6 +558,27 @@ async function hydrateOutputFolder() {
   }
 
   syncControls();
+}
+
+async function hideWindowForRecording(settings) {
+  if (!settings.hideWhileRecording) {
+    return;
+  }
+
+  state.windowHiddenForRecording = true;
+  await window.smartie.setWindowHidden(true);
+  await new Promise((resolve) => {
+    window.setTimeout(resolve, 320);
+  });
+}
+
+async function restoreRecordingWindow() {
+  if (!state.windowHiddenForRecording) {
+    return;
+  }
+
+  state.windowHiddenForRecording = false;
+  await window.smartie.setWindowHidden(false);
 }
 
 function selectSource(source) {
@@ -1112,7 +1137,9 @@ async function startRecording() {
     syncControls();
     setStatus('Preparing capture');
     resizeCanvasForProfile();
-    await runCountdown(getSettings().countdownSeconds);
+    const settings = getSettings();
+    await runCountdown(settings.countdownSeconds);
+    await hideWindowForRecording(settings);
 
     state.captureStream = await openCaptureStream();
     state.micStream = await openMicrophoneStream();
@@ -1270,6 +1297,10 @@ function handleGlobalShortcut(action) {
     toggleFocusLock();
   } else if (action === 'drop-marker') {
     dropMarker();
+  } else if (action === 'toggle-window-visibility') {
+    window.smartie.toggleWindowVisibility().catch((error) => {
+      console.warn('Could not toggle Smartie window visibility.', error);
+    });
   }
 }
 
@@ -1314,6 +1345,9 @@ function cleanupRecording() {
   cameraVideo.srcObject = null;
   elements.recordingDot.classList.remove('active');
   elements.emptyState.hidden = false;
+  restoreRecordingWindow().catch((error) => {
+    console.warn('Could not restore Smartie window.', error);
+  });
   resetMicMeter(elements.microphone.checked ? 'Mic armed' : 'Mic off');
   resetHealth();
 }
@@ -1433,6 +1467,7 @@ for (const input of [
   elements.microphone,
   elements.micGain,
   elements.cameraBubble,
+  elements.hideWhileRecording,
   elements.cameraPosition,
   elements.countdownSeconds,
   elements.saveMode,
