@@ -65,6 +65,11 @@ button.ghost {
   border-color: var(--line);
 }
 
+button.ghost.active {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: minmax(680px, 1fr) 360px;

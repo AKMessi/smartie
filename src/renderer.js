@@ -7,7 +7,9 @@ const elements = {
   sourceCount: document.querySelector('#sourceCount'),
   refreshSources: document.querySelector('#refreshSources'),
   startRecording: document.querySelector('#startRecording'),
+  pauseRecording: document.querySelector('#pauseRecording'),
   stopRecording: document.querySelector('#stopRecording'),
+  cancelRecording: document.querySelector('#cancelRecording'),
   revealRecording: document.querySelector('#revealRecording'),
   statusText: document.querySelector('#statusText'),
   timer: document.querySelector('#timer'),
@@ -43,7 +45,11 @@ const state = {
   chunks: [],
   drawing: false,
   recording: false,
+  paused: false,
+  discardRequested: false,
   startedAt: 0,
+  pausedAt: 0,
+  pausedDuration: 0,
   timerId: null,
   pointerPollId: null,
   lastRecordingPath: null,
@@ -89,6 +95,62 @@ const qualityProfiles = {
   }
 };
 
+const persistedSettingKeys = [
+  'smartMaster',
+  'autoZoom',
+  'cursorSpotlight',
+  'motionFocus',
+  'keyboardOverlay',
+  'clickPulse',
+  'idleWide',
+  'quality',
+  'fps',
+  'microphone',
+  'countdownSeconds',
+  'zoomStrength',
+  'smoothing'
+];
+
+const settingsStoreKey = 'smartie.settings.v1';
+
+function loadPersistedSettings() {
+  try {
+    const settings = JSON.parse(localStorage.getItem(settingsStoreKey) || '{}');
+
+    for (const key of persistedSettingKeys) {
+      if (!(key in settings) || !elements[key]) {
+        continue;
+      }
+
+      if (elements[key].type === 'checkbox') {
+        elements[key].checked = Boolean(settings[key]);
+      } else {
+        elements[key].value = String(settings[key]);
+      }
+    }
+
+    if (settings.lastSourceId) {
+      state.lastSourceId = settings.lastSourceId;
+    }
+  } catch (error) {
+    console.warn('Could not load Smartie settings.', error);
+  }
+}
+
+function saveSettings() {
+  const settings = getSettings();
+  if (state.selectedSource) {
+    settings.lastSourceId = state.selectedSource.id;
+  }
+
+  localStorage.setItem(settingsStoreKey, JSON.stringify(settings));
+}
+
+function scheduleSaveSettings() {
+  window.clearTimeout(scheduleSaveSettings.id);
+  scheduleSaveSettings.id = window.setTimeout(saveSettings, 120);
+}
+
 function getSettings() {
   return {
     smartMaster: elements.smartMaster.checked,
@@ -124,12 +186,17 @@ function updateTimer() {
     return;
   }
 
-  elements.timer.textContent = formatTime(Date.now() - state.startedAt);
+  const now = state.paused ? state.pausedAt : Date.now();
+  elements.timer.textContent = formatTime(now - state.startedAt - state.pausedDuration);
 }
 
 function syncControls() {
   elements.startRecording.disabled = state.recording || !state.selectedSource;
+  elements.pauseRecording.disabled = !state.recording || !state.mediaRecorder;
+  elements.pauseRecording.textContent = state.paused ? 'Resume' : 'Pause';
+  elements.pauseRecording.classList.toggle('active', state.paused);
   elements.stopRecording.disabled = !state.recording;
+  elements.cancelRecording.disabled = !state.recording;
   elements.refreshSources.disabled = state.recording;
   elements.revealRecording.disabled = !state.lastRecordingPath;
 
@@ -144,12 +211,14 @@ function syncControls() {
 
 function selectSource(source) {
   state.selectedSource = source;
+  state.lastSourceId = source.id;
 
   for (const card of elements.sourceList.querySelectorAll('.source-card')) {
     card.classList.toggle('selected', card.dataset.sourceId === source.id);
   }
 
   setStatus(`Armed: ${source.name}`);
+  saveSettings();
   syncControls();
 }
 
@@ -175,7 +244,14 @@ function renderSources() {
     elements.sourceList.append(card);
   }
 
-  if (!state.selectedSource && state.sources.length > 0) {
+  const rememberedSource = state.sources.find((source) => source.id === state.lastSourceId);
+  const stillAvailableSource = state.sources.find((source) => state.selectedSource && source.id === state.selectedSource.id);
+
+  if (rememberedSource) {
+    selectSource(rememberedSource);
+  } else if (stillAvailableSource) {
+    selectSource(stillAvailableSource);
+  } else if (!state.selectedSource && state.sources.length > 0) {
     selectSource(state.sources[0]);
   }
 }
@@ -569,6 +645,7 @@ async function startRecording() {
     const mimeType = recorderMimeType();
     const profile = qualityProfiles[getSettings().quality] || qualityProfiles.balanced;
     state.chunks = [];
+    state.discardRequested = false;
     state.mediaRecorder = new MediaRecorder(state.canvasStream, {
       mimeType,
       videoBitsPerSecond: profile.bitsPerSecond
@@ -584,7 +661,10 @@ async function startRecording() {
     state.mediaRecorder.start(1000);
 
     state.recording = true;
+    state.paused = false;
     state.startedAt = Date.now();
+    state.pausedAt = 0;
+    state.pausedDuration = 0;
     state.timerId = window.setInterval(updateTimer, 250);
     state.drawing = true;
     state.frame = { scale: 1, x: 0.5, y: 0.5 };
@@ -602,6 +682,34 @@ async function startRecording() {
   }
 }
 
+function togglePauseRecording() {
+  if (!state.recording || !state.mediaRecorder) {
+    return;
+  }
+
+  if (state.paused) {
+    if (state.mediaRecorder.state === 'paused') {
+      state.mediaRecorder.resume();
+    }
+
+    state.pausedDuration += Date.now() - state.pausedAt;
+    state.paused = false;
+    state.pausedAt = 0;
+    setStatus('Recording');
+  } else {
+    if (state.mediaRecorder.state === 'recording') {
+      state.mediaRecorder.pause();
+    }
+
+    state.paused = true;
+    state.pausedAt = Date.now();
+    setStatus('Paused');
+  }
+
+  updateTimer();
+  syncControls();
+}
+
 function stopRecording() {
   if (!state.mediaRecorder || !state.recording) {
     return;
@@ -610,13 +718,25 @@ function stopRecording() {
   setStatus('Finalizing');
   state.mediaRecorder.stop();
   state.recording = false;
+  state.paused = false;
   updateTimer();
   syncControls();
+}
+
+function cancelRecording() {
+  if (!state.mediaRecorder || !state.recording) {
+    return;
+  }
+
+  state.discardRequested = true;
+  setStatus('Discarding');
+  stopRecording();
 }
 
 function cleanupRecording() {
   state.drawing = false;
   state.recording = false;
+  state.paused = false;
   stopPointerPolling();
   window.clearInterval(state.timerId);
   state.timerId = null;
@@ -626,12 +746,22 @@ function cleanupRecording() {
   state.captureStream = null;
   state.micStream = null;
   state.canvasStream = null;
+  state.mediaRecorder = null;
   video.srcObject = null;
   elements.recordingDot.classList.remove('active');
   elements.emptyState.hidden = false;
 }
 
 async function saveRecording() {
+  if (state.discardRequested) {
+    cleanupRecording();
+    state.chunks = [];
+    state.discardRequested = false;
+    setStatus('Recording discarded');
+    syncControls();
+    return;
+  }
+
   const mimeType = recorderMimeType() || 'video/webm';
   const blob = new Blob(state.chunks, { type: mimeType });
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -700,7 +830,9 @@ function updateKeyOverlay(event) {
 
 elements.refreshSources.addEventListener('click', refreshSources);
 elements.startRecording.addEventListener('click', startRecording);
+elements.pauseRecording.addEventListener('click', togglePauseRecording);
 elements.stopRecording.addEventListener('click', stopRecording);
+elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
 
 for (const input of [
@@ -719,7 +851,9 @@ for (const input of [
   elements.smoothing
 ]) {
   input.addEventListener('input', syncControls);
+  input.addEventListener('input', scheduleSaveSettings);
   input.addEventListener('change', syncControls);
+  input.addEventListener('change', scheduleSaveSettings);
 }
 
 window.addEventListener('keydown', updateKeyOverlay);
@@ -737,6 +871,7 @@ window.addEventListener('click', (event) => {
   };
 });
 
+loadPersistedSettings();
 resizeCanvasForProfile();
 drawWaitingFrame();
 syncControls();

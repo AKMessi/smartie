@@ -19,6 +19,8 @@ master feature toggle.
   - Click/moment pulse
   - Idle wide shot
 - Microphone capture support.
+- Pause/resume, discard, and elapsed-time tracking that excludes pauses.
+- Persistent capture and smart-framing preferences.
 - Quality presets, frame-rate control, countdown, elapsed timer, and local WebM
   export.
 - Linux desktop support through Electron desktop capture APIs.

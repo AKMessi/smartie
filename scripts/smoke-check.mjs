@@ -38,7 +38,11 @@ for (const feature of [
   'motionFocus',
   'keyboardOverlay',
   'clickPulse',
-  'idleWide'
+  'idleWide',
+  'pauseRecording',
+  'cancelRecording',
+  'saveSettings',
+  'loadPersistedSettings'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);
