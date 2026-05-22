@@ -84,7 +84,7 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }

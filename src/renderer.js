@@ -1595,6 +1595,7 @@ async function saveRecording() {
     rememberRecording({
       filePath: result.filePath,
       metadataPath: result.metadataPath,
+      chaptersPath: result.chaptersPath,
       sourceName: state.selectedSource ? state.selectedSource.name : null,
       durationMs,
       markers,

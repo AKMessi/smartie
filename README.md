@@ -28,6 +28,7 @@ master feature toggle.
 - Recent takes list with quick reveal actions.
 - Chapter markers with a shortcut and brief rendered marker overlay.
 - JSON sidecar metadata next to every saved video with markers and smart settings.
+- WebVTT chapter sidecars for marker import into players and editors.
 - Rendered privacy blur region for masking sensitive UI during demos.
 - Live capture health telemetry with FPS and dropped-frame estimates.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
