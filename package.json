@@ -6,7 +6,9 @@
   "scripts": {
     "start": "electron --no-sandbox .",
     "smoke": "electron --no-sandbox . --smoke-test",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node scripts/smoke-check.mjs"
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check scripts/doctor.mjs && node scripts/smoke-check.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "package:linux": "electron-packager . Smartie --platform=linux --arch=x64 --out=dist --overwrite --prune=true --ignore='^/dist($|/)' --ignore='^/node_modules/.cache($|/)'"
   },
   "keywords": [
     "screen-recorder",
@@ -18,6 +20,7 @@
   "author": "AKMessi",
   "license": "MIT",
   "devDependencies": {
+    "@electron/packager": "^20.0.0",
     "electron": "^42.2.0"
   }
 }

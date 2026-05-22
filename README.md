@@ -66,6 +66,13 @@ the OS already owns it.
 ```bash
 npm run check
 npm run smoke
+npm run doctor
+```
+
+## Package
+
+```bash
+npm run package:linux
 ```
 
 ## Notes

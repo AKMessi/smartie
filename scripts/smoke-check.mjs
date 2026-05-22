@@ -23,6 +23,12 @@ if (pkg.name !== 'smartie') {
   throw new Error('package.json name must stay smartie');
 }
 
+for (const script of ['doctor', 'package:linux']) {
+  if (!pkg.scripts || !pkg.scripts[script]) {
+    throw new Error(`package.json is missing ${script} script`);
+  }
+}
+
 const html = readFileSync(join(root, 'src/index.html'), 'utf8');
 for (const asset of ['styles.css', 'renderer.js']) {
   if (!html.includes(asset)) {
