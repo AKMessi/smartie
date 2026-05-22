@@ -121,6 +121,14 @@ function defaultRecordingPath() {
   }
 }
 
+function defaultRecordingDirectory() {
+  try {
+    return app.getPath('videos');
+  } catch {
+    return app.getPath('documents');
+  }
+}
+
 ipcMain.handle('smartie:list-sources', async () => {
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],
@@ -149,13 +157,24 @@ ipcMain.handle('smartie:get-pointer', () => ({
 }));
 
 ipcMain.handle('smartie:save-recording', async (_event, payload) => {
-  const { bytes, suggestedName } = payload || {};
+  const { bytes, suggestedName, saveMode, outputDir } = payload || {};
   if (!bytes) {
     throw new Error('No recording data received.');
   }
 
+  if (saveMode === 'auto') {
+    const directory = outputDir || defaultRecordingDirectory();
+    const filePath = path.join(directory, suggestedName || path.basename(defaultRecordingPath()));
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(filePath, Buffer.from(bytes));
+    return {
+      canceled: false,
+      filePath
+    };
+  }
+
   const defaultPath = suggestedName
-    ? path.join(path.dirname(defaultRecordingPath()), suggestedName)
+    ? path.join(outputDir || defaultRecordingDirectory(), suggestedName)
     : defaultRecordingPath();
 
   const result = await dialog.showSaveDialog(mainWindow, {
@@ -184,6 +203,22 @@ ipcMain.handle('smartie:reveal-file', async (_event, filePath) => {
   }
 
   shell.showItemInFolder(filePath);
+});
+
+ipcMain.handle('smartie:get-default-output-dir', () => defaultRecordingDirectory());
+
+ipcMain.handle('smartie:choose-output-dir', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose Smartie output folder',
+    defaultPath: defaultRecordingDirectory(),
+    properties: ['openDirectory', 'createDirectory']
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  return result.filePaths[0];
 });
 
 ipcMain.handle('smartie:get-shortcuts', () => shortcutStatuses);

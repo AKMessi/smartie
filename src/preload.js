@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('smartie', {
   getPointer: () => ipcRenderer.invoke('smartie:get-pointer'),
   saveRecording: (payload) => ipcRenderer.invoke('smartie:save-recording', payload),
   revealFile: (filePath) => ipcRenderer.invoke('smartie:reveal-file', filePath),
+  getDefaultOutputDir: () => ipcRenderer.invoke('smartie:get-default-output-dir'),
+  chooseOutputDir: () => ipcRenderer.invoke('smartie:choose-output-dir'),
   getShortcuts: () => ipcRenderer.invoke('smartie:get-shortcuts'),
   onShortcut: (callback) => {
     const listener = (_event, action) => callback(action);

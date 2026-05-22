@@ -31,6 +31,9 @@ const elements = {
   cameraBubble: document.querySelector('#cameraBubble'),
   cameraPosition: document.querySelector('#cameraPosition'),
   countdownSeconds: document.querySelector('#countdownSeconds'),
+  saveMode: document.querySelector('#saveMode'),
+  outputFolder: document.querySelector('#outputFolder'),
+  chooseOutputFolder: document.querySelector('#chooseOutputFolder'),
   zoomStrength: document.querySelector('#zoomStrength'),
   zoomStrengthValue: document.querySelector('#zoomStrengthValue'),
   smoothing: document.querySelector('#smoothing'),
@@ -57,6 +60,7 @@ const state = {
   timerId: null,
   pointerPollId: null,
   lastRecordingPath: null,
+  outputDir: null,
   keys: [],
   pulse: {
     active: false,
@@ -113,6 +117,7 @@ const persistedSettingKeys = [
   'cameraBubble',
   'cameraPosition',
   'countdownSeconds',
+  'saveMode',
   'zoomStrength',
   'smoothing'
 ];
@@ -138,6 +143,10 @@ function loadPersistedSettings() {
     if (settings.lastSourceId) {
       state.lastSourceId = settings.lastSourceId;
     }
+
+    if (settings.outputDir) {
+      state.outputDir = settings.outputDir;
+    }
   } catch (error) {
     console.warn('Could not load Smartie settings.', error);
   }
@@ -147,6 +156,9 @@ function saveSettings() {
   const settings = getSettings();
   if (state.selectedSource) {
     settings.lastSourceId = state.selectedSource.id;
+  }
+  if (state.outputDir) {
+    settings.outputDir = state.outputDir;
   }
 
   localStorage.setItem(settingsStoreKey, JSON.stringify(settings));
@@ -172,6 +184,8 @@ function getSettings() {
     cameraBubble: elements.cameraBubble.checked,
     cameraPosition: elements.cameraPosition.value,
     countdownSeconds: Number(elements.countdownSeconds.value),
+    saveMode: elements.saveMode.value,
+    outputDir: state.outputDir,
     zoomStrength: Number(elements.zoomStrength.value),
     smoothing: Number(elements.smoothing.value)
   };
@@ -206,6 +220,7 @@ function syncControls() {
   elements.stopRecording.disabled = !state.recording;
   elements.cancelRecording.disabled = !state.recording;
   elements.refreshSources.disabled = state.recording;
+  elements.chooseOutputFolder.disabled = state.recording;
   elements.revealRecording.disabled = !state.lastRecordingPath;
 
   for (const input of document.querySelectorAll('.toggle-grid input')) {
@@ -215,6 +230,26 @@ function syncControls() {
   elements.fpsValue.textContent = `${elements.fps.value} fps`;
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
   elements.smoothingValue.textContent = `${Math.round(Number(elements.smoothing.value) * 100)}%`;
+  elements.outputFolder.textContent = state.outputDir || 'Default Videos folder';
+}
+
+async function chooseOutputFolder() {
+  const folder = await window.smartie.chooseOutputDir();
+  if (!folder) {
+    return;
+  }
+
+  state.outputDir = folder;
+  saveSettings();
+  syncControls();
+}
+
+async function hydrateOutputFolder() {
+  if (!state.outputDir) {
+    state.outputDir = await window.smartie.getDefaultOutputDir();
+  }
+
+  syncControls();
 }
 
 function selectSource(source) {
@@ -875,13 +910,16 @@ async function saveRecording() {
   const mimeType = recorderMimeType() || 'video/webm';
   const blob = new Blob(state.chunks, { type: mimeType });
   const bytes = new Uint8Array(await blob.arrayBuffer());
+  const settings = getSettings();
 
   cleanupRecording();
 
   try {
     const result = await window.smartie.saveRecording({
       bytes,
-      suggestedName: buildSuggestedName()
+      suggestedName: buildSuggestedName(),
+      saveMode: settings.saveMode,
+      outputDir: settings.outputDir
     });
 
     if (result.canceled) {
@@ -944,6 +982,7 @@ elements.pauseRecording.addEventListener('click', togglePauseRecording);
 elements.stopRecording.addEventListener('click', stopRecording);
 elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
+elements.chooseOutputFolder.addEventListener('click', chooseOutputFolder);
 window.smartie.onShortcut(handleGlobalShortcut);
 
 for (const input of [
@@ -960,6 +999,7 @@ for (const input of [
   elements.cameraBubble,
   elements.cameraPosition,
   elements.countdownSeconds,
+  elements.saveMode,
   elements.zoomStrength,
   elements.smoothing
 ]) {
@@ -991,6 +1031,9 @@ syncControls();
 refreshSources().catch((error) => {
   console.error(error);
   setStatus(error.message || 'Source scan failed');
+});
+hydrateOutputFolder().catch((error) => {
+  console.warn('Could not load Smartie output folder.', error);
 });
 reportShortcutRegistration().catch((error) => {
   console.warn('Could not inspect Smartie shortcuts.', error);

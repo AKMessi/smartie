@@ -46,7 +46,10 @@ for (const feature of [
   'handleGlobalShortcut',
   'cameraBubble',
   'drawCameraBubble',
-  'openCameraStream'
+  'openCameraStream',
+  'saveMode',
+  'chooseOutputFolder',
+  'hydrateOutputFolder'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);
@@ -61,7 +64,7 @@ for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGloba
 }
 
 const preload = readFileSync(join(root, 'src/preload.js'), 'utf8');
-for (const feature of ['getShortcuts', 'onShortcut']) {
+for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir']) {
   if (!preload.includes(feature)) {
     throw new Error(`Preload is missing shortcut bridge: ${feature}`);
   }

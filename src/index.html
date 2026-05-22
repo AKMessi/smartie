@@ -117,6 +117,22 @@
               <option value="5">5 seconds</option>
             </select>
           </label>
+
+          <label class="field">
+            <span>Save mode</span>
+            <select id="saveMode">
+              <option value="ask" selected>Ask every time</option>
+              <option value="auto">Auto-save</option>
+            </select>
+          </label>
+
+          <div class="field">
+            <span>Output folder</span>
+            <div class="folder-row">
+              <span id="outputFolder">Default Videos folder</span>
+              <button id="chooseOutputFolder" type="button" class="ghost">Choose</button>
+            </div>
+          </div>
         </section>
 
         <section class="panel-section">

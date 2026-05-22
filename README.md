@@ -20,6 +20,7 @@ master feature toggle.
   - Idle wide shot
 - Microphone capture support.
 - Optional mirrored webcam bubble with selectable corner placement.
+- Auto-save mode with a selectable output folder for repeated takes.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
 - Global recorder shortcuts with Wayland portal support where available.
