@@ -70,6 +70,14 @@ button.ghost.active {
   color: var(--amber);
 }
 
+button.mini-button {
+  min-height: 28px;
+  border-color: var(--line);
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: minmax(680px, 1fr) 360px;
@@ -236,6 +244,16 @@ canvas {
   gap: 10px;
 }
 
+.recent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.empty-mini {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .source-card {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
@@ -270,6 +288,37 @@ canvas {
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.recent-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: #13161b;
+}
+
+.recent-card strong,
+.recent-card span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-card strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.recent-card span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .toggle-grid {

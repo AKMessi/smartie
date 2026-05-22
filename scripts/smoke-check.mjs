@@ -49,7 +49,10 @@ for (const feature of [
   'openCameraStream',
   'saveMode',
   'chooseOutputFolder',
-  'hydrateOutputFolder'
+  'hydrateOutputFolder',
+  'recentRecordings',
+  'rememberRecording',
+  'renderRecentRecordings'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);

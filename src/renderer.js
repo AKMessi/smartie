@@ -6,6 +6,8 @@ const cameraVideo = document.querySelector('#cameraVideo');
 const elements = {
   sourceList: document.querySelector('#sourceList'),
   sourceCount: document.querySelector('#sourceCount'),
+  recentList: document.querySelector('#recentList'),
+  clearRecent: document.querySelector('#clearRecent'),
   refreshSources: document.querySelector('#refreshSources'),
   startRecording: document.querySelector('#startRecording'),
   pauseRecording: document.querySelector('#pauseRecording'),
@@ -60,6 +62,7 @@ const state = {
   timerId: null,
   pointerPollId: null,
   lastRecordingPath: null,
+  recentRecordings: [],
   outputDir: null,
   keys: [],
   pulse: {
@@ -123,6 +126,7 @@ const persistedSettingKeys = [
 ];
 
 const settingsStoreKey = 'smartie.settings.v1';
+const recentStoreKey = 'smartie.recent.v1';
 
 function loadPersistedSettings() {
   try {
@@ -167,6 +171,82 @@ function saveSettings() {
 function scheduleSaveSettings() {
   window.clearTimeout(scheduleSaveSettings.id);
   scheduleSaveSettings.id = window.setTimeout(saveSettings, 120);
+}
+
+function loadRecentRecordings() {
+  try {
+    const recent = JSON.parse(localStorage.getItem(recentStoreKey) || '[]');
+    state.recentRecordings = Array.isArray(recent) ? recent.slice(0, 12) : [];
+
+    if (!state.lastRecordingPath && state.recentRecordings[0]) {
+      state.lastRecordingPath = state.recentRecordings[0].filePath;
+    }
+  } catch (error) {
+    console.warn('Could not load Smartie recent recordings.', error);
+    state.recentRecordings = [];
+  }
+}
+
+function saveRecentRecordings() {
+  localStorage.setItem(recentStoreKey, JSON.stringify(state.recentRecordings.slice(0, 12)));
+}
+
+function fileNameFromPath(filePath) {
+  return filePath.split(/[\\/]/).pop() || filePath;
+}
+
+function renderRecentRecordings() {
+  elements.recentList.textContent = '';
+  elements.clearRecent.disabled = state.recentRecordings.length === 0;
+
+  if (state.recentRecordings.length === 0) {
+    const empty = document.createElement('span');
+    empty.className = 'empty-mini';
+    empty.textContent = 'No saved takes yet.';
+    elements.recentList.append(empty);
+    return;
+  }
+
+  for (const recording of state.recentRecordings) {
+    const card = document.createElement('div');
+    card.className = 'recent-card';
+
+    const details = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = fileNameFromPath(recording.filePath);
+
+    const meta = document.createElement('span');
+    const duration = formatTime(recording.durationMs || 0);
+    meta.textContent = `${duration} - ${recording.sourceName || 'Unknown source'}`;
+
+    const reveal = document.createElement('button');
+    reveal.type = 'button';
+    reveal.className = 'mini-button';
+    reveal.textContent = 'Reveal';
+    reveal.addEventListener('click', () => window.smartie.revealFile(recording.filePath));
+
+    details.append(title, meta);
+    card.append(details, reveal);
+    elements.recentList.append(card);
+  }
+}
+
+function rememberRecording(recording) {
+  state.recentRecordings = [
+    recording,
+    ...state.recentRecordings.filter((item) => item.filePath !== recording.filePath)
+  ].slice(0, 12);
+
+  saveRecentRecordings();
+  renderRecentRecordings();
+}
+
+function clearRecentRecordings() {
+  state.recentRecordings = [];
+  saveRecentRecordings();
+  state.lastRecordingPath = null;
+  renderRecentRecordings();
+  syncControls();
 }
 
 function getSettings() {
@@ -911,6 +991,7 @@ async function saveRecording() {
   const blob = new Blob(state.chunks, { type: mimeType });
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const settings = getSettings();
+  const durationMs = Math.max(0, Date.now() - state.startedAt - state.pausedDuration);
 
   cleanupRecording();
 
@@ -928,6 +1009,12 @@ async function saveRecording() {
     }
 
     state.lastRecordingPath = result.filePath;
+    rememberRecording({
+      filePath: result.filePath,
+      sourceName: state.selectedSource ? state.selectedSource.name : null,
+      durationMs,
+      createdAt: new Date().toISOString()
+    });
     setStatus('Saved');
   } catch (error) {
     console.error(error);
@@ -983,6 +1070,7 @@ elements.stopRecording.addEventListener('click', stopRecording);
 elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
 elements.chooseOutputFolder.addEventListener('click', chooseOutputFolder);
+elements.clearRecent.addEventListener('click', clearRecentRecordings);
 window.smartie.onShortcut(handleGlobalShortcut);
 
 for (const input of [
@@ -1025,6 +1113,8 @@ window.addEventListener('click', (event) => {
 });
 
 loadPersistedSettings();
+loadRecentRecordings();
+renderRecentRecordings();
 resizeCanvasForProfile();
 drawWaitingFrame();
 syncControls();
