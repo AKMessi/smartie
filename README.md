@@ -24,6 +24,7 @@ master feature toggle.
 - Optional mirrored webcam bubble with selectable corner placement.
 - Auto-save mode with a selectable output folder for repeated takes.
 - Recent takes list with quick reveal actions.
+- Chapter markers with a shortcut and brief rendered marker overlay.
 - Live capture health telemetry with FPS and dropped-frame estimates.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
@@ -62,6 +63,7 @@ root-owned.
 - `Ctrl+Alt+S`: toggle Smart Stack features.
 - `Ctrl+Alt+M`: mute or unmute microphone.
 - `Ctrl+Alt+F`: lock or release smart focus.
+- `Ctrl+Alt+K`: drop a chapter marker.
 
 On some desktop environments a shortcut can fail to register if another app or
 the OS already owns it.

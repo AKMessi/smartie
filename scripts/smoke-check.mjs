@@ -66,7 +66,9 @@ for (const feature of [
   'startMicMeter',
   'focusMode',
   'setFocusLock',
-  'toggleFocusLock'
+  'toggleFocusLock',
+  'dropMarker',
+  'drawMarkerOverlay'
 ]) {
   if (!renderer.includes(feature)) {
     throw new Error(`Renderer is missing smart feature: ${feature}`);

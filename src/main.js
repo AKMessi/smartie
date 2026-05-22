@@ -40,6 +40,11 @@ const recorderShortcuts = [
     action: 'toggle-focus-lock',
     accelerator: 'CommandOrControl+Alt+F',
     label: 'Lock or release smart focus'
+  },
+  {
+    action: 'drop-marker',
+    accelerator: 'CommandOrControl+Alt+K',
+    label: 'Drop chapter marker'
   }
 ];
 

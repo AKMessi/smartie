@@ -11,6 +11,7 @@ const elements = {
   refreshSources: document.querySelector('#refreshSources'),
   startRecording: document.querySelector('#startRecording'),
   pauseRecording: document.querySelector('#pauseRecording'),
+  dropMarker: document.querySelector('#dropMarker'),
   stopRecording: document.querySelector('#stopRecording'),
   cancelRecording: document.querySelector('#cancelRecording'),
   revealRecording: document.querySelector('#revealRecording'),
@@ -81,6 +82,8 @@ const state = {
   lastRecordingPath: null,
   recentRecordings: [],
   outputDir: null,
+  markers: [],
+  activeMarker: null,
   keys: [],
   pulse: {
     active: false,
@@ -248,7 +251,9 @@ function renderRecentRecordings() {
 
     const meta = document.createElement('span');
     const duration = formatTime(recording.durationMs || 0);
-    meta.textContent = `${duration} - ${recording.sourceName || 'Unknown source'}`;
+    const markerCount = recording.markers ? recording.markers.length : 0;
+    const markerText = markerCount === 1 ? '1 marker' : `${markerCount} markers`;
+    meta.textContent = `${duration} - ${markerText} - ${recording.sourceName || 'Unknown source'}`;
 
     const reveal = document.createElement('button');
     reveal.type = 'button';
@@ -321,8 +326,16 @@ function updateTimer() {
     return;
   }
 
-  const now = state.paused ? state.pausedAt : Date.now();
-  elements.timer.textContent = formatTime(now - state.startedAt - state.pausedDuration);
+  elements.timer.textContent = formatTime(recordingElapsedMs());
+}
+
+function recordingElapsedMs(now = Date.now()) {
+  if (!state.recording && state.startedAt === 0) {
+    return 0;
+  }
+
+  const effectiveNow = state.paused ? state.pausedAt : now;
+  return Math.max(0, effectiveNow - state.startedAt - state.pausedDuration);
 }
 
 function resetHealth() {
@@ -389,6 +402,7 @@ function syncControls() {
   elements.pauseRecording.disabled = !state.recording || !state.mediaRecorder;
   elements.pauseRecording.textContent = state.paused ? 'Resume' : 'Pause';
   elements.pauseRecording.classList.toggle('active', state.paused);
+  elements.dropMarker.disabled = !state.recording;
   elements.stopRecording.disabled = !state.recording;
   elements.cancelRecording.disabled = !state.recording;
   elements.refreshSources.disabled = state.recording;
@@ -852,6 +866,40 @@ function drawKeyboardOverlay(settings) {
   ctx.restore();
 }
 
+function drawMarkerOverlay(settings) {
+  if (!settings.smartMaster || !state.activeMarker) {
+    return;
+  }
+
+  const elapsed = performance.now() - state.activeMarker.startedAt;
+  if (elapsed > 1800) {
+    state.activeMarker = null;
+    return;
+  }
+
+  const width = canvas.width;
+  const paddingX = 24;
+  const x = 40;
+  const y = 40;
+  const boxHeight = 62;
+  const text = `${state.activeMarker.label}  ${formatTime(state.activeMarker.atMs)}`;
+
+  ctx.save();
+  ctx.font = '800 26px system-ui, sans-serif';
+  const boxWidth = Math.min(width - 80, ctx.measureText(text).width + paddingX * 2);
+  ctx.globalAlpha = Math.min(1, 1.2 - elapsed / 1800);
+  ctx.fillStyle = 'rgba(16, 17, 20, 0.84)';
+  ctx.strokeStyle = 'rgba(255, 191, 90, 0.9)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, x, y, boxWidth, boxHeight, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#f4f1ea';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + paddingX, y + boxHeight / 2);
+  ctx.restore();
+}
+
 function drawCameraBubble(settings) {
   if (!settings.cameraBubble || !state.cameraStream || cameraVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
     return;
@@ -917,6 +965,7 @@ function drawLoop(timestamp = performance.now()) {
     drawVideoFrame(settings);
     drawCursorSpotlight(settings);
     drawPulse(settings);
+    drawMarkerOverlay(settings);
     drawCameraBubble(settings);
     drawKeyboardOverlay(settings);
     elements.emptyState.hidden = true;
@@ -1079,6 +1128,8 @@ async function startRecording() {
     const mimeType = recorderMimeType();
     const profile = qualityProfiles[getSettings().quality] || qualityProfiles.balanced;
     state.chunks = [];
+    state.markers = [];
+    state.activeMarker = null;
     state.discardRequested = false;
     state.mediaRecorder = new MediaRecorder(state.canvasStream, {
       mimeType,
@@ -1152,6 +1203,10 @@ function stopRecording() {
     return;
   }
 
+  if (state.paused) {
+    state.pausedDuration += Date.now() - state.pausedAt;
+  }
+
   setStatus('Finalizing');
   state.mediaRecorder.stop();
   state.recording = false;
@@ -1168,6 +1223,25 @@ function cancelRecording() {
   state.discardRequested = true;
   setStatus('Discarding');
   stopRecording();
+}
+
+function dropMarker() {
+  if (!state.recording) {
+    return;
+  }
+
+  const marker = {
+    label: `Marker ${state.markers.length + 1}`,
+    atMs: recordingElapsedMs(),
+    createdAt: new Date().toISOString()
+  };
+
+  state.markers.push(marker);
+  state.activeMarker = {
+    ...marker,
+    startedAt: performance.now()
+  };
+  setStatus(`${marker.label} dropped`);
 }
 
 function toggleSmartStack() {
@@ -1194,6 +1268,8 @@ function handleGlobalShortcut(action) {
     toggleMicMute();
   } else if (action === 'toggle-focus-lock') {
     toggleFocusLock();
+  } else if (action === 'drop-marker') {
+    dropMarker();
   }
 }
 
@@ -1210,6 +1286,8 @@ function cleanupRecording() {
   state.drawing = false;
   state.recording = false;
   state.paused = false;
+  state.markers = [];
+  state.activeMarker = null;
   stopPointerPolling();
   stopMicMeter();
   window.clearInterval(state.timerId);
@@ -1254,7 +1332,8 @@ async function saveRecording() {
   const blob = new Blob(state.chunks, { type: mimeType });
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const settings = getSettings();
-  const durationMs = Math.max(0, Date.now() - state.startedAt - state.pausedDuration);
+  const durationMs = recordingElapsedMs();
+  const markers = state.markers.slice();
 
   cleanupRecording();
 
@@ -1276,6 +1355,7 @@ async function saveRecording() {
       filePath: result.filePath,
       sourceName: state.selectedSource ? state.selectedSource.name : null,
       durationMs,
+      markers,
       createdAt: new Date().toISOString()
     });
     setStatus('Saved');
@@ -1329,6 +1409,7 @@ function updateKeyOverlay(event) {
 elements.refreshSources.addEventListener('click', refreshSources);
 elements.startRecording.addEventListener('click', startRecording);
 elements.pauseRecording.addEventListener('click', togglePauseRecording);
+elements.dropMarker.addEventListener('click', dropMarker);
 elements.stopRecording.addEventListener('click', stopRecording);
 elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
