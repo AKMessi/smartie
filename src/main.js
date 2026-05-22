@@ -1,11 +1,58 @@
-const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen, shell } = require('electron');
+const { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, screen, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const APP_TITLE = 'Smartie';
 const IS_SMOKE_TEST = process.argv.includes('--smoke-test');
 
+app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
+
 let mainWindow;
+let shortcutStatuses = [];
+
+const recorderShortcuts = [
+  {
+    action: 'toggle-recording',
+    accelerator: 'CommandOrControl+Alt+R',
+    label: 'Start or stop recording'
+  },
+  {
+    action: 'toggle-pause',
+    accelerator: 'CommandOrControl+Alt+P',
+    label: 'Pause or resume recording'
+  },
+  {
+    action: 'discard-recording',
+    accelerator: 'CommandOrControl+Alt+X',
+    label: 'Discard active recording'
+  },
+  {
+    action: 'toggle-smart-stack',
+    accelerator: 'CommandOrControl+Alt+S',
+    label: 'Toggle smart features'
+  }
+];
+
+function sendShortcut(action) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('smartie:shortcut', action);
+}
+
+function registerGlobalShortcuts() {
+  shortcutStatuses = recorderShortcuts.map((shortcut) => {
+    const registered = globalShortcut.register(shortcut.accelerator, () => {
+      sendShortcut(shortcut.action);
+    });
+
+    return {
+      ...shortcut,
+      registered
+    };
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -139,15 +186,25 @@ ipcMain.handle('smartie:reveal-file', async (_event, filePath) => {
   shell.showItemInFolder(filePath);
 });
 
+ipcMain.handle('smartie:get-shortcuts', () => shortcutStatuses);
+
 app.whenReady().then(() => {
   app.setName(APP_TITLE);
   createWindow();
+
+  if (!IS_SMOKE_TEST) {
+    registerGlobalShortcuts();
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
 });
 
 app.on('window-all-closed', () => {

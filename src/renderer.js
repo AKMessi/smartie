@@ -733,6 +733,38 @@ function cancelRecording() {
   stopRecording();
 }
 
+function toggleSmartStack() {
+  elements.smartMaster.checked = !elements.smartMaster.checked;
+  setStatus(elements.smartMaster.checked ? 'Smart features enabled' : 'Smart features disabled');
+  saveSettings();
+  syncControls();
+}
+
+function handleGlobalShortcut(action) {
+  if (action === 'toggle-recording') {
+    if (state.recording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  } else if (action === 'toggle-pause') {
+    togglePauseRecording();
+  } else if (action === 'discard-recording') {
+    cancelRecording();
+  } else if (action === 'toggle-smart-stack') {
+    toggleSmartStack();
+  }
+}
+
+async function reportShortcutRegistration() {
+  const shortcuts = await window.smartie.getShortcuts();
+  const failed = shortcuts.filter((shortcut) => !shortcut.registered);
+
+  if (failed.length > 0) {
+    console.warn('Some Smartie global shortcuts were not registered.', failed);
+  }
+}
+
 function cleanupRecording() {
   state.drawing = false;
   state.recording = false;
@@ -834,6 +866,7 @@ elements.pauseRecording.addEventListener('click', togglePauseRecording);
 elements.stopRecording.addEventListener('click', stopRecording);
 elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
+window.smartie.onShortcut(handleGlobalShortcut);
 
 for (const input of [
   elements.smartMaster,
@@ -878,4 +911,7 @@ syncControls();
 refreshSources().catch((error) => {
   console.error(error);
   setStatus(error.message || 'Source scan failed');
+});
+reportShortcutRegistration().catch((error) => {
+  console.warn('Could not inspect Smartie shortcuts.', error);
 });

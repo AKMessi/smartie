@@ -21,6 +21,7 @@ master feature toggle.
 - Microphone capture support.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
+- Global recorder shortcuts with Wayland portal support where available.
 - Quality presets, frame-rate control, countdown, elapsed timer, and local WebM
   export.
 - Linux desktop support through Electron desktop capture APIs.
@@ -46,6 +47,16 @@ npm start
 The development launcher passes Electron `--no-sandbox` so it can run from
 mounted Linux drives where Chromium's setuid sandbox helper cannot be made
 root-owned.
+
+## Global Shortcuts
+
+- `Ctrl+Alt+R`: start or stop recording.
+- `Ctrl+Alt+P`: pause or resume recording.
+- `Ctrl+Alt+X`: discard the active recording.
+- `Ctrl+Alt+S`: toggle Smart Stack features.
+
+On some desktop environments a shortcut can fail to register if another app or
+the OS already owns it.
 
 ## Verify
 
