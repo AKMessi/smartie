@@ -43,6 +43,7 @@ const elements = {
   fps: document.querySelector('#fps'),
   fpsValue: document.querySelector('#fpsValue'),
   smoothRecording: document.querySelector('#smoothRecording'),
+  performanceMode: document.querySelector('#performanceMode'),
   takeTitle: document.querySelector('#takeTitle'),
   titleDuration: document.querySelector('#titleDuration'),
   cueText: document.querySelector('#cueText'),
@@ -98,6 +99,7 @@ const state = {
   micMuted: false,
   cameraStream: null,
   canvasStream: null,
+  canvasVideoTrack: null,
   mediaRecorder: null,
   chunks: [],
   drawing: false,
@@ -182,6 +184,24 @@ const qualityProfiles = {
   }
 };
 
+const performanceProfiles = {
+  ultra: {
+    shortSide: 720,
+    bitrateScale: 0.58,
+    motionScanMs: 420
+  },
+  balanced: {
+    shortSide: 900,
+    bitrateScale: 0.74,
+    motionScanMs: 300
+  },
+  quality: {
+    shortSide: Infinity,
+    bitrateScale: 1,
+    motionScanMs: 180
+  }
+};
+
 const persistedSettingKeys = [
   'smartMaster',
   'autoZoom',
@@ -199,6 +219,7 @@ const persistedSettingKeys = [
   'outputLayout',
   'fps',
   'smoothRecording',
+  'performanceMode',
   'takeTitle',
   'titleDuration',
   'cueText',
@@ -357,26 +378,61 @@ function renderDeviceSelect(select, devices, selectedValue, defaultLabel, fallba
 
 function canvasSizeForSettings(settings = getSettings()) {
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
+  let size;
 
   if (settings.outputLayout === 'vertical') {
-    return {
+    size = {
       width: profile.height,
       height: profile.width
     };
-  }
-
-  if (settings.outputLayout === 'square') {
-    const size = Math.min(profile.width, profile.height);
-    return {
-      width: size,
-      height: size
+  } else if (settings.outputLayout === 'square') {
+    const squareSize = Math.min(profile.width, profile.height);
+    return capCanvasSize({
+      width: squareSize,
+      height: squareSize
+    }, performanceShortSide(settings));
+  } else {
+    size = {
+      width: profile.width,
+      height: profile.height
     };
   }
 
+  return capCanvasSize(size, performanceShortSide(settings));
+}
+
+function performanceProfile(settings = getSettings()) {
+  if (!settings.smoothRecording) {
+    return performanceProfiles.quality;
+  }
+
+  return performanceProfiles[settings.performanceMode] || performanceProfiles.ultra;
+}
+
+function performanceShortSide(settings = getSettings()) {
+  return performanceProfile(settings).shortSide;
+}
+
+function capCanvasSize(size, maxShortSide) {
+  if (!Number.isFinite(maxShortSide)) {
+    return size;
+  }
+
+  const shortSide = Math.min(size.width, size.height);
+  if (shortSide <= maxShortSide) {
+    return size;
+  }
+
+  const scale = maxShortSide / shortSide;
+  const even = (value) => Math.max(2, Math.round(value / 2) * 2);
   return {
-    width: profile.width,
-    height: profile.height
+    width: even(size.width * scale),
+    height: even(size.height * scale)
   };
+}
+
+function lowLatencyMode(settings = getSettings()) {
+  return settings.smoothRecording && settings.performanceMode === 'ultra';
 }
 
 function effectiveRecordingFps(settings = getSettings()) {
@@ -387,7 +443,7 @@ function effectiveRecordingFps(settings = getSettings()) {
 function recordingBitrate(settings = getSettings()) {
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
   return settings.smoothRecording
-    ? Math.round(profile.bitsPerSecond * 0.82)
+    ? Math.round(profile.bitsPerSecond * performanceProfile(settings).bitrateScale)
     : profile.bitsPerSecond;
 }
 
@@ -469,6 +525,7 @@ function getSettings() {
     outputLayout: elements.outputLayout.value,
     fps: Number(elements.fps.value),
     smoothRecording: elements.smoothRecording.checked,
+    performanceMode: elements.performanceMode.value,
     takeTitle: cleanTitle(elements.takeTitle.value),
     titleDuration: Number(elements.titleDuration.value),
     cueText: cleanCueText(elements.cueText.value),
@@ -600,6 +657,7 @@ function syncControls() {
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
   elements.micDevice.disabled = state.recording;
+  elements.performanceMode.disabled = !elements.smoothRecording.checked;
   elements.noiseGateThreshold.disabled = !elements.noiseGate.checked;
   elements.cameraDevice.disabled = state.recording;
   elements.refreshDevices.disabled = state.recording;
@@ -978,6 +1036,7 @@ function mapPointerToCapture(pointerPayload) {
   const dx = x - state.pointer.x;
   const dy = y - state.pointer.y;
   const velocity = Math.hypot(dx, dy);
+  const settings = getSettings();
 
   state.pointer.previousX = state.pointer.x;
   state.pointer.previousY = state.pointer.y;
@@ -994,10 +1053,9 @@ function mapPointerToCapture(pointerPayload) {
       y,
       at: performance.now()
     });
-    state.trail = state.trail.slice(-28);
+    state.trail = state.trail.slice(lowLatencyMode(settings) ? -12 : -28);
   }
 
-  const settings = getSettings();
   if (velocity > 0.055 && settings.clickPulse) {
     state.pulse = {
       active: true,
@@ -1019,7 +1077,7 @@ function scanMotionTarget(settings, timestamp) {
     && settings.focusMode === 'motion'
     && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
 
-  const scanInterval = settings.smoothRecording ? 280 : 180;
+  const scanInterval = performanceProfile(settings).motionScanMs;
   if (!shouldScan || timestamp - state.motionTarget.lastScanAt < scanInterval) {
     return;
   }
@@ -1150,6 +1208,27 @@ function drawWaitingFrame() {
   ctx.fillText('Select a source to start recording.', canvas.width / 2, canvas.height / 2 + 32);
 }
 
+function createRecordingCanvasStream(settings) {
+  const effectiveFps = effectiveRecordingFps(settings);
+  let stream = canvas.captureStream(settings.smoothRecording ? 0 : effectiveFps);
+  let [videoTrack] = stream.getVideoTracks();
+
+  if (settings.smoothRecording && (!videoTrack || typeof videoTrack.requestFrame !== 'function')) {
+    stopStream(stream);
+    stream = canvas.captureStream(effectiveFps);
+    [videoTrack] = stream.getVideoTracks();
+  }
+
+  state.canvasVideoTrack = videoTrack || null;
+  return stream;
+}
+
+function requestRecordingFrame() {
+  if (state.canvasVideoTrack && typeof state.canvasVideoTrack.requestFrame === 'function') {
+    state.canvasVideoTrack.requestFrame();
+  }
+}
+
 function coverRect(sourceWidth, sourceHeight, targetWidth, targetHeight, scale) {
   const baseScale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight) * scale;
   const drawWidth = sourceWidth * baseScale;
@@ -1269,6 +1348,18 @@ function drawPrivacyBlur(settings) {
   }
 
   const rect = privacyRect(settings);
+
+  if (lowLatencyMode(settings)) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(16, 17, 20, 0.88)';
+    ctx.strokeStyle = 'rgba(255, 191, 90, 0.72)';
+    ctx.lineWidth = Math.max(2, canvas.width * 0.0012);
+    roundRect(ctx, rect.x, rect.y, rect.width, rect.height, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
 
   ctx.save();
   ctx.beginPath();
@@ -1660,7 +1751,8 @@ function drawCameraBubble(settings) {
 
   const width = canvas.width;
   const height = canvas.height;
-  const bubbleWidth = Math.min(width * 0.22, 460);
+  const isLowLatency = lowLatencyMode(settings);
+  const bubbleWidth = Math.min(width * (isLowLatency ? 0.18 : 0.22), isLowLatency ? 280 : 460);
   const bubbleHeight = bubbleWidth * 0.5625;
   const margin = Math.max(32, width * 0.025);
   const isTop = settings.cameraPosition.startsWith('top');
@@ -1670,9 +1762,9 @@ function drawCameraBubble(settings) {
   const radius = Math.max(12, bubbleWidth * 0.035);
 
   ctx.save();
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
-  ctx.shadowBlur = 28;
-  ctx.shadowOffsetY = 12;
+  ctx.shadowColor = isLowLatency ? 'transparent' : 'rgba(0, 0, 0, 0.45)';
+  ctx.shadowBlur = isLowLatency ? 0 : 28;
+  ctx.shadowOffsetY = isLowLatency ? 0 : 12;
   ctx.fillStyle = 'rgba(16, 17, 20, 0.78)';
   roundRect(ctx, x - 8, y - 8, bubbleWidth + 16, bubbleHeight + 16, radius + 8);
   ctx.fill();
@@ -1736,25 +1828,27 @@ function drawLoop(timestamp = performance.now()) {
     drawTitleOverlay(settings);
     drawCueOverlay(settings);
     elements.emptyState.hidden = true;
+    requestRecordingFrame();
   } else {
     drawWaitingFrame();
+    requestRecordingFrame();
   }
 
   requestAnimationFrame(drawLoop);
 }
 
 async function openCaptureStream(settings = getSettings()) {
-  const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
-  const captureWidth = settings.smoothRecording ? Math.min(profile.width, 1920) : profile.width;
-  const captureHeight = settings.smoothRecording ? Math.min(profile.height, 1080) : profile.height;
+  const renderSize = canvasSizeForSettings(settings);
+  const captureWidth = Math.max(640, renderSize.width);
+  const captureHeight = Math.max(480, renderSize.height);
   const captureStream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
       mandatory: {
         chromeMediaSource: 'desktop',
         chromeMediaSourceId: state.selectedSource.id,
-        minWidth: 1280,
-        minHeight: 720,
+        minWidth: Math.min(1280, captureWidth),
+        minHeight: Math.min(720, captureHeight),
         maxWidth: captureWidth,
         maxHeight: captureHeight,
         maxFrameRate: effectiveRecordingFps(settings)
@@ -1967,6 +2061,8 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       fps: effectiveRecordingFps(settings),
       requestedFps: settings.fps,
       smoothRecording: settings.smoothRecording,
+      performanceMode: settings.smoothRecording ? settings.performanceMode : 'quality',
+      manualFramePump: Boolean(state.canvasVideoTrack && typeof state.canvasVideoTrack.requestFrame === 'function'),
       bitrate: recordingBitrate(settings),
       microphone: settings.microphone,
       micDevice: settings.micDevice || 'default',
@@ -2004,8 +2100,7 @@ async function startRecording() {
     state.captureStream = await openCaptureStream(settings);
     state.micStream = await openMicrophoneStream(settings);
     state.cameraStream = await openCameraStream(settings);
-    const effectiveFps = effectiveRecordingFps(settings);
-    state.canvasStream = canvas.captureStream(effectiveFps);
+    state.canvasStream = createRecordingCanvasStream(settings);
 
     if (state.micStream) {
       for (const track of state.micStream.getAudioTracks()) {
@@ -2234,6 +2329,7 @@ function cleanupRecording() {
   }
   state.cameraStream = null;
   state.canvasStream = null;
+  state.canvasVideoTrack = null;
   state.mediaRecorder = null;
   video.srcObject = null;
   cameraVideo.srcObject = null;
@@ -2390,6 +2486,7 @@ for (const input of [
   elements.outputLayout,
   elements.fps,
   elements.smoothRecording,
+  elements.performanceMode,
   elements.takeTitle,
   elements.titleDuration,
   elements.cueText,

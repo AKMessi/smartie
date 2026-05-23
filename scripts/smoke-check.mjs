@@ -114,8 +114,14 @@ for (const feature of [
   'buildRecordingMetadata',
   'exportFormat',
   'smoothRecording',
+  'performanceMode',
+  'performanceProfile',
+  'capCanvasSize',
+  'lowLatencyMode',
   'effectiveRecordingFps',
   'recordingBitrate',
+  'createRecordingCanvasStream',
+  'requestRecordingFrame',
   'captureSnapshot',
   'canvasPngBytes'
 ]) {
