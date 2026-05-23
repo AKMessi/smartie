@@ -12,8 +12,8 @@ saved video after recording.
 - Hybrid Smartie pipeline that records native video first and post-renders smart effects into the saved file.
 - Native smooth recording pipeline for direct desktop capture when no baked effects are needed.
 - Optional canvas-based live smart-effects pipeline for fully real-time baked effects.
-- Smooth smart zoom that follows the cursor and eases back out when idle.
-- Smart focus modes for cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
+- Smart Director auto zoom with scored cursor intent, dwell, motion, marker, keyboard, and emphasis signals plus offline path smoothing.
+- Smart focus modes for Smart Director, cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Master Smart Features toggle plus individual toggles for:
   - Auto zoom
   - Cursor spotlight

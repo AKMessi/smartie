@@ -144,6 +144,19 @@ const state = {
     x: 0.5,
     y: 0.5
   },
+  attention: {
+    active: {
+      source: 'wide',
+      reason: 'wide',
+      x: 0.5,
+      y: 0.5,
+      scale: 1,
+      score: 1,
+      confidence: 0,
+      selectedAt: performance.now(),
+      lastUpdatedAt: performance.now()
+    }
+  },
   motionTarget: {
     x: 0.5,
     y: 0.5,
@@ -263,6 +276,9 @@ function loadPersistedSettings() {
     const settings = JSON.parse(localStorage.getItem(settingsStoreKey) || '{}');
     if (settings.recordingEngine === 'native' && settings.smartMaster !== false) {
       settings.recordingEngine = 'hybrid';
+    }
+    if (!settings.focusMode || settings.focusMode === 'cursor') {
+      settings.focusMode = 'director';
     }
 
     for (const key of persistedSettingKeys) {
@@ -772,6 +788,13 @@ function renderFocusStatus() {
     elements.focusStatus.textContent = 'Holding wide shot';
   } else if (state.focusLock.active) {
     elements.focusStatus.textContent = `Locked ${Math.round(state.focusLock.x * 100)}%, ${Math.round(state.focusLock.y * 100)}%`;
+  } else if (elements.focusMode.value === 'director') {
+    const active = state.attention.active || {};
+    const label = active.source === 'wide'
+      ? 'wide'
+      : active.reason || active.source || 'intent';
+    const confidence = Math.round((active.confidence || 0) * 100);
+    elements.focusStatus.textContent = `Director ${label} ${confidence}%`;
   } else if (elements.focusMode.value === 'motion') {
     const age = performance.now() - state.motionTarget.lastSeenAt;
     elements.focusStatus.textContent = age < 1200
@@ -1164,10 +1187,11 @@ function mapPointerToCapture(pointerPayload) {
 }
 
 function scanMotionTarget(settings, timestamp) {
+  const motionAwareMode = settings.focusMode === 'motion' || settings.focusMode === 'director';
   const shouldScan = settings.smartMaster
     && settings.autoZoom
     && settings.motionFocus
-    && settings.focusMode === 'motion'
+    && motionAwareMode
     && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
 
   const scanInterval = performanceProfile(settings).motionScanMs;
@@ -1406,6 +1430,69 @@ function tuneScreenVideoTrack(track) {
   }
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function clamp01(value) {
+  return clamp(value, 0, 1);
+}
+
+function lerp(start, end, amount) {
+  return start + (end - start) * amount;
+}
+
+function normalizedDistance(a, b) {
+  return Math.hypot((a.x || 0.5) - (b.x || 0.5), (a.y || 0.5) - (b.y || 0.5));
+}
+
+function resetAttentionEngine() {
+  const now = performance.now();
+  state.attention = {
+    active: {
+      source: 'wide',
+      reason: 'wide',
+      x: 0.5,
+      y: 0.5,
+      scale: 1,
+      score: 1,
+      confidence: 0,
+      selectedAt: now,
+      lastUpdatedAt: now
+    }
+  };
+}
+
+function attentionScale(settings, confidence, bonus = 0) {
+  const effectiveConfidence = clamp01(confidence);
+  const base = 1 + (settings.zoomStrength - 1) * (0.62 + effectiveConfidence * 0.38);
+  return clamp(base + bonus, 1, Math.max(1.05, settings.zoomStrength + 0.34));
+}
+
+function pointerIntentPoint() {
+  const dx = state.pointer.x - state.pointer.previousX;
+  const dy = state.pointer.y - state.pointer.previousY;
+  const lead = clamp(state.pointer.velocity * 2.6, 0, 0.18);
+  return {
+    x: clamp(state.pointer.x + dx * (1.1 + lead * 4), 0.02, 0.98),
+    y: clamp(state.pointer.y + dy * (1.1 + lead * 4), 0.02, 0.98)
+  };
+}
+
+function attentionCandidate({ source, reason, x, y, score, confidence = score, scale, selectedAt = performance.now() }) {
+  return {
+    source,
+    reason,
+    x: clamp(x, 0, 1),
+    y: clamp(y, 0, 1),
+    scale,
+    score,
+    confidence: clamp01(confidence),
+    selectedAt,
+    lastUpdatedAt: performance.now()
+  };
+}
+
 function coverRect(sourceWidth, sourceHeight, targetWidth, targetHeight, scale) {
   const baseScale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight) * scale;
   const drawWidth = sourceWidth * baseScale;
@@ -1413,51 +1500,201 @@ function coverRect(sourceWidth, sourceHeight, targetWidth, targetHeight, scale) 
   return { drawWidth, drawHeight };
 }
 
-function smartTarget(settings) {
-  const now = performance.now();
+function buildAttentionCandidates(settings, now = performance.now()) {
+  const candidates = [];
   const idleFor = now - state.pointer.lastMovedAt;
   const hasSmartZoom = settings.smartMaster && settings.autoZoom;
   const forcedWide = settings.focusMode === 'wide';
-  const hasFocusLock = state.focusLock.active && !forcedWide;
-  const hasMotionTarget = settings.focusMode === 'motion' && now - state.motionTarget.lastSeenAt < 1500 && !forcedWide;
-  const shouldIdleWide = settings.smartMaster && settings.idleWide && !hasFocusLock && idleFor > 1700;
-  const activeMotion = state.pointer.velocity > 0.003 || idleFor < 1300;
-  let scale = 1;
-  let x = state.pointer.x;
-  let y = state.pointer.y;
+  const wideCandidate = (score = 1, reason = 'wide') => attentionCandidate({
+    source: 'wide',
+    reason,
+    x: 0.5,
+    y: 0.5,
+    scale: 1,
+    score,
+    confidence: 0,
+    selectedAt: now
+  });
 
-  if (hasFocusLock) {
-    scale = settings.zoomStrength;
-    x = state.focusLock.x;
-    y = state.focusLock.y;
-  } else if (hasMotionTarget) {
-    scale = settings.zoomStrength + Math.min(0.3, state.motionTarget.strength * 0.45);
-    x = state.motionTarget.x;
-    y = state.motionTarget.y;
-  } else if (hasSmartZoom && activeMotion && !forcedWide) {
-    const motionBoost = Math.min(0.28, state.pointer.velocity * 4.2);
-    scale = settings.zoomStrength + motionBoost;
+  if (!hasSmartZoom || forcedWide) {
+    return [wideCandidate(2, forcedWide ? 'forced wide' : 'smart off')];
   }
 
-  if (shouldIdleWide || forcedWide) {
-    scale = 1;
-    x = 0.5;
-    y = 0.5;
+  if (state.focusLock.active) {
+    candidates.push(attentionCandidate({
+      source: 'lock',
+      reason: 'locked focus',
+      x: state.focusLock.x,
+      y: state.focusLock.y,
+      scale: clamp(settings.zoomStrength + 0.08, 1, settings.zoomStrength + 0.34),
+      score: 2,
+      confidence: 1,
+      selectedAt: now
+    }));
+    return candidates;
   }
 
-  return {
-    scale,
-    x: hasSmartZoom ? x : 0.5,
-    y: hasSmartZoom ? y : 0.5
+  const directorMode = settings.focusMode === 'director';
+  const pointerMode = directorMode || settings.focusMode === 'cursor' || settings.focusMode === 'click-lock';
+  const motionMode = directorMode || settings.focusMode === 'motion';
+  const movingConfidence = clamp01((state.pointer.velocity - 0.0015) / 0.022);
+  const recentPointer = clamp01((1650 - idleFor) / 1650);
+  const dwellConfidence = clamp01((idleFor - 120) / 1000);
+  const emphasisConfidence = state.pulse.active
+    ? clamp01(1 - (now - state.pulse.startedAt) / 720)
+    : 0;
+
+  if (pointerMode) {
+    const point = pointerIntentPoint();
+    const baseScore = settings.focusMode === 'click-lock' ? 0.28 : directorMode ? 0.46 : 0.58;
+    let score = baseScore + recentPointer * 0.28 + movingConfidence * 0.26 + dwellConfidence * 0.16;
+    if (settings.idleWide && idleFor > 1850 && emphasisConfidence === 0 && !directorMode) {
+      score *= 0.46;
+    }
+
+    const confidence = clamp01(score);
+    candidates.push(attentionCandidate({
+      source: 'pointer',
+      reason: movingConfidence > 0.34 ? 'cursor intent' : dwellConfidence > 0.45 ? 'cursor dwell' : 'cursor',
+      x: point.x,
+      y: point.y,
+      scale: attentionScale(settings, confidence, Math.min(0.16, state.pointer.velocity * 2.2)),
+      score,
+      confidence,
+      selectedAt: now
+    }));
+  }
+
+  if (emphasisConfidence > 0) {
+    const confidence = clamp01(0.74 + emphasisConfidence * 0.26);
+    candidates.push(attentionCandidate({
+      source: 'pulse',
+      reason: 'emphasis',
+      x: state.pulse.x,
+      y: state.pulse.y,
+      scale: attentionScale(settings, confidence, 0.12),
+      score: 1.12 + emphasisConfidence * 0.24,
+      confidence,
+      selectedAt: now
+    }));
+  }
+
+  if (motionMode && settings.motionFocus) {
+    const motionAge = now - state.motionTarget.lastSeenAt;
+    const freshness = clamp01((1800 - motionAge) / 1800);
+    if (freshness > 0 && state.motionTarget.strength > 0.015) {
+      const pointerPenalty = directorMode && idleFor < 420 ? 0.58 : 1;
+      const confidence = clamp01((0.34 + state.motionTarget.strength * 0.84) * freshness * pointerPenalty);
+      candidates.push(attentionCandidate({
+        source: 'motion',
+        reason: 'screen motion',
+        x: state.motionTarget.x,
+        y: state.motionTarget.y,
+        scale: attentionScale(settings, confidence, Math.min(0.24, state.motionTarget.strength * 0.34)),
+        score: (settings.focusMode === 'motion' ? 0.72 : 0.48) + confidence * 0.62,
+        confidence,
+        selectedAt: now
+      }));
+    }
+  }
+
+  if (state.activeMarker) {
+    const markerAge = now - state.activeMarker.startedAt;
+    const freshness = clamp01((1800 - markerAge) / 1800);
+    if (freshness > 0) {
+      const confidence = clamp01(0.72 + freshness * 0.2);
+      candidates.push(attentionCandidate({
+        source: 'marker',
+        reason: state.activeMarker.reason || 'marker',
+        x: state.activeMarker.x,
+        y: state.activeMarker.y,
+        scale: attentionScale(settings, confidence, 0.08),
+        score: 0.82 + freshness * 0.24,
+        confidence,
+        selectedAt: now
+      }));
+    }
+  }
+
+  if (state.keys.length > 0 && directorMode) {
+    const active = state.attention.active || { x: 0.5, y: 0.5 };
+    candidates.push(attentionCandidate({
+      source: 'keyboard',
+      reason: 'keyboard',
+      x: active.source === 'wide' ? 0.5 : active.x,
+      y: active.source === 'wide' ? 0.58 : active.y,
+      scale: attentionScale(settings, 0.62, 0),
+      score: 0.62,
+      confidence: 0.62,
+      selectedAt: now
+    }));
+  }
+
+  if (settings.idleWide && idleFor > 2300 && emphasisConfidence === 0) {
+    const confidence = clamp01((idleFor - 2300) / 1700);
+    candidates.push(wideCandidate(0.64 + confidence * 0.44, 'idle wide'));
+  }
+
+  if (candidates.length === 0) {
+    candidates.push(wideCandidate(0.8, 'wide'));
+  }
+
+  return candidates.sort((a, b) => b.score - a.score);
+}
+
+function chooseAttentionTarget(settings, now = performance.now()) {
+  const candidates = buildAttentionCandidates(settings, now);
+  const best = candidates[0];
+  const active = state.attention.active || candidates[candidates.length - 1];
+  const sameSource = active.source === best.source;
+  const heldFor = now - (active.selectedAt || 0);
+  const minimumHold = active.source === 'wide' ? 260 : best.source === 'wide' ? 980 : 620;
+  const switchMargin = best.source === 'wide' ? 0.1 : 0.16;
+  const activeDecayedScore = Math.max(0, (active.score || 0) - heldFor / 7000);
+  const closeEnough = normalizedDistance(active, best) < 0.055;
+  const shouldSwitch = sameSource
+    || active.source === 'wide'
+    || best.source === 'lock'
+    || heldFor > minimumHold && (best.score > activeDecayedScore + switchMargin || closeEnough)
+    || best.source === 'wide' && best.score > 0.92 && heldFor > 900;
+
+  if (shouldSwitch) {
+    const next = sameSource
+      ? {
+          ...best,
+          selectedAt: active.selectedAt || now,
+          x: lerp(active.x, best.x, closeEnough ? 0.22 : 0.44),
+          y: lerp(active.y, best.y, closeEnough ? 0.22 : 0.44),
+          scale: lerp(active.scale, best.scale, 0.36)
+        }
+      : { ...best, selectedAt: now };
+    state.attention.active = next;
+    return next;
+  }
+
+  const held = {
+    ...active,
+    score: activeDecayedScore,
+    confidence: Math.max(0.2, (active.confidence || 0) * 0.992),
+    lastUpdatedAt: now
   };
+  state.attention.active = held;
+  return held;
+}
+
+function smartTarget(settings) {
+  return chooseAttentionTarget(settings);
 }
 
 function easeFrame(settings) {
   const target = smartTarget(settings);
-  const smoothing = settings.smartMaster ? settings.smoothing : 0.16;
-  state.frame.scale += (target.scale - state.frame.scale) * smoothing;
-  state.frame.x += (target.x - state.frame.x) * smoothing;
-  state.frame.y += (target.y - state.frame.y) * smoothing;
+  const baseSmoothing = settings.smartMaster ? settings.smoothing : 0.16;
+  const travel = normalizedDistance(state.frame, target);
+  const panSmoothing = clamp(baseSmoothing + travel * 0.16 + target.confidence * 0.025, 0.045, 0.32);
+  const zoomSmoothing = clamp(baseSmoothing * 0.82 + target.confidence * 0.03, 0.04, 0.24);
+  state.frame.scale += (target.scale - state.frame.scale) * zoomSmoothing;
+  state.frame.x += (target.x - state.frame.x) * panSmoothing;
+  state.frame.y += (target.y - state.frame.y) * panSmoothing;
 }
 
 function drawVideoFrame(settings) {
@@ -2132,6 +2369,84 @@ function timelineSampleAt(timeline, atMs) {
   };
 }
 
+function refineSmartTimeline(timeline) {
+  if (timeline.length < 3) {
+    return timeline;
+  }
+
+  const smoothingWindowMs = 180;
+  const smoothed = timeline.map((sample, sampleIndex) => {
+    let weightTotal = 0;
+    let x = 0;
+    let y = 0;
+    let scale = 0;
+
+    for (let index = sampleIndex; index >= 0; index -= 1) {
+      const candidate = timeline[index];
+      const distanceMs = Math.abs(sample.atMs - candidate.atMs);
+      if (distanceMs > smoothingWindowMs) {
+        break;
+      }
+
+      const weight = 1 - distanceMs / smoothingWindowMs;
+      weightTotal += weight;
+      x += candidate.frame.x * weight;
+      y += candidate.frame.y * weight;
+      scale += candidate.frame.scale * weight;
+    }
+
+    for (let index = sampleIndex + 1; index < timeline.length; index += 1) {
+      const candidate = timeline[index];
+      const distanceMs = Math.abs(sample.atMs - candidate.atMs);
+      if (distanceMs > smoothingWindowMs) {
+        break;
+      }
+
+      const weight = 1 - distanceMs / smoothingWindowMs;
+      weightTotal += weight;
+      x += candidate.frame.x * weight;
+      y += candidate.frame.y * weight;
+      scale += candidate.frame.scale * weight;
+    }
+
+    return {
+      ...sample,
+      frame: {
+        scale: scale / weightTotal,
+        x: x / weightTotal,
+        y: y / weightTotal
+      }
+    };
+  });
+
+  const refined = [smoothed[0]];
+  for (let index = 1; index < smoothed.length; index += 1) {
+    const previous = refined[refined.length - 1];
+    const current = smoothed[index];
+    const dt = Math.max(16, current.atMs - previous.atMs) / 1000;
+    const maxPanStep = 0.78 * dt;
+    const maxScaleStep = 1.08 * dt;
+    const dx = current.frame.x - previous.frame.x;
+    const dy = current.frame.y - previous.frame.y;
+    const distance = Math.hypot(dx, dy);
+    const panRatio = distance > maxPanStep ? maxPanStep / distance : 1;
+    const scaleDelta = current.frame.scale - previous.frame.scale;
+
+    refined.push({
+      ...current,
+      frame: {
+        x: distance < 0.004 ? previous.frame.x : previous.frame.x + dx * panRatio,
+        y: distance < 0.004 ? previous.frame.y : previous.frame.y + dy * panRatio,
+        scale: Math.abs(scaleDelta) < 0.012
+          ? previous.frame.scale
+          : previous.frame.scale + clamp(scaleDelta, -maxScaleStep, maxScaleStep)
+      }
+    });
+  }
+
+  return refined;
+}
+
 function drawSmartTimelineFrame(settings, timelinePlan, atMs) {
   const sample = timelineSampleAt(timelinePlan.timeline, atMs);
 
@@ -2684,6 +2999,7 @@ async function startRecording() {
     state.timerId = window.setInterval(updateTimer, 250);
     state.drawing = true;
     state.frame = { scale: 1, x: 0.5, y: 0.5 };
+    resetAttentionEngine();
     state.motionTarget.previousFrame = null;
     state.motionTarget.strength = 0;
     state.trail = [];
@@ -2899,6 +3215,7 @@ function cleanupRecording() {
   state.smartTrail = [];
   state.smartPulses = [];
   state.renderContext = null;
+  resetAttentionEngine();
   video.srcObject = null;
   cameraVideo.srcObject = null;
   elements.recordingDot.classList.remove('active');
@@ -2929,7 +3246,7 @@ async function saveRecording() {
     settings,
     durationMs,
     markers,
-    timeline: state.smartTimeline.slice(),
+    timeline: refineSmartTimeline(state.smartTimeline.slice()),
     trail: state.smartTrail.slice(),
     pulses: state.smartPulses.slice()
   };
