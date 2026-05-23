@@ -147,7 +147,12 @@ for (const feature of [
   'drawTimelineCursorTrail',
   'drawTimelinePulses',
   'drawTimelineMarkerOverlay',
+  'buildAttentionTimeline',
+  'buildTimelineAttentionEvent',
+  'attentionCue',
+  'shouldKeepAttentionEvent',
   'audioSourceBytes',
+  'attentionTimeline',
   'recordingMimeType',
   'recordingSettings',
   'createRecordingCanvasStream',
@@ -163,7 +168,7 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieBundle', 'smartieBundlePathFor', 'attention.timeline.json', 'bundleFileMode']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }

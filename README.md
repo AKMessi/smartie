@@ -35,6 +35,7 @@ saved video after recording.
 - Recent takes list with quick reveal actions.
 - Chapter markers with a shortcut, automatic smart moments, and brief rendered marker overlay.
 - JSON sidecar metadata next to every saved video with markers and smart settings.
+- Vex-compatible Smartie bundle sidecar next to every saved video with recording, manifest, metadata, and attention timeline files.
 - WebVTT chapter sidecars for marker import into players and editors.
 - PNG snapshot capture from the polished recording canvas.
 - Take title naming with optional rendered title card and lower-third overlay.
@@ -93,6 +94,30 @@ npm run check
 npm run smoke
 npm run doctor
 ```
+
+## Vex Integration
+
+Each saved take writes a bundle directory beside the WebM:
+
+```text
+smartie-my-take.webm
+smartie-my-take.smartie.json
+smartie-my-take.chapters.vtt
+smartie-my-take.smartie-bundle/
+  manifest.json
+  recording.webm
+  attention.timeline.json
+  recording.smartie.json
+```
+
+The bundle is designed for Vex's optional Smartie importer:
+
+```bash
+vex import-smartie /path/to/smartie-my-take.smartie-bundle --project "Smartie Demo" --render
+```
+
+Smartie records the source video and director telemetry; Vex can use the
+attention timeline for production-grade post-production zoom planning.
 
 ## Package
 

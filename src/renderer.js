@@ -1274,12 +1274,22 @@ function captureSmartTimelineFrame(settings = state.recordingSettings || getSett
   const timestamp = performance.now();
   scanMotionTarget(settings, timestamp);
   easeFrame(settings);
+  const attention = state.attention.active || {};
   state.smartTimeline.push({
     atMs: recordingElapsedMs(),
     frame: {
       scale: state.frame.scale,
       x: state.frame.x,
       y: state.frame.y
+    },
+    attention: {
+      source: attention.source || 'attention',
+      reason: attention.reason || attention.source || 'attention',
+      x: clamp01(finiteNumber(attention.x, state.frame.x)),
+      y: clamp01(finiteNumber(attention.y, state.frame.y)),
+      scale: Math.max(1, finiteNumber(attention.scale, state.frame.scale)),
+      score: clamp01(finiteNumber(attention.score, 0.5)),
+      confidence: clamp01(finiteNumber(attention.confidence, attention.score || 0.5))
     },
     pointer: {
       x: state.pointer.x,
@@ -1436,6 +1446,11 @@ function clamp(value, min, max) {
 
 function clamp01(value) {
   return clamp(value, 0, 1);
+}
+
+function finiteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 function lerp(start, end, amount) {
@@ -2447,6 +2462,207 @@ function refineSmartTimeline(timeline) {
   return refined;
 }
 
+function roundTo(value, digits = 3) {
+  const factor = 10 ** digits;
+  return Math.round(finiteNumber(value, 0) * factor) / factor;
+}
+
+function attentionCue(sample) {
+  const attention = sample.attention || {};
+  const source = String(attention.source || '').toLowerCase();
+  const reason = String(attention.reason || '').toLowerCase();
+  const keys = Array.isArray(sample.keys) ? sample.keys : [];
+
+  if (keys.length > 0 || source === 'keyboard' || reason.includes('key')) {
+    return 'keyboard';
+  }
+
+  if (source === 'pulse' || reason.includes('click') || reason.includes('emphasis')) {
+    return 'click';
+  }
+
+  if (reason.includes('dwell') || reason.includes('hold') || source === 'lock') {
+    return 'dwell';
+  }
+
+  if (source === 'motion' || reason.includes('motion')) {
+    return 'motion';
+  }
+
+  if (source === 'wide' || reason.includes('wide')) {
+    return 'wide';
+  }
+
+  if (source === 'pointer' && reason.includes('intent')) {
+    return 'motion';
+  }
+
+  return 'attention';
+}
+
+function attentionEventDurationMs(cue) {
+  if (cue === 'click') {
+    return 340;
+  }
+
+  if (cue === 'keyboard') {
+    return 980;
+  }
+
+  if (cue === 'dwell') {
+    return 1200;
+  }
+
+  if (cue === 'motion') {
+    return 420;
+  }
+
+  return 760;
+}
+
+function shouldKeepAttentionEvent(event, previousEvent) {
+  if (!previousEvent) {
+    return true;
+  }
+
+  const elapsedMs = event.time_ms - previousEvent.time_ms;
+  const distance = Math.hypot(event.x - previousEvent.x, event.y - previousEvent.y);
+  const scaleDelta = Math.abs((event.scale || 1) - (previousEvent.scale || 1));
+
+  return event.type !== previousEvent.type
+    || elapsedMs >= 360
+    || distance >= 0.018
+    || scaleDelta >= 0.045
+    || event.confidence >= 0.82 && elapsedMs >= 220;
+}
+
+function buildTimelineAttentionEvent(sample, outputSize) {
+  const attention = sample.attention || {};
+  const frame = sample.frame || {};
+  const pointer = sample.pointer || {};
+  const cue = attentionCue(sample);
+
+  if (cue === 'wide' && finiteNumber(frame.scale, 1) < 1.08) {
+    return null;
+  }
+
+  const x = clamp01(finiteNumber(attention.x, finiteNumber(frame.x, finiteNumber(pointer.x, 0.5))));
+  const y = clamp01(finiteNumber(attention.y, finiteNumber(frame.y, finiteNumber(pointer.y, 0.5))));
+  const scale = Math.max(1, finiteNumber(attention.scale, finiteNumber(frame.scale, 1)));
+  const confidence = clamp01(Math.max(
+    finiteNumber(attention.confidence, 0.5),
+    finiteNumber(attention.score, 0.5),
+    Math.min(1, (scale - 1) / 1.2)
+  ));
+
+  return {
+    time: roundTo(finiteNumber(sample.atMs, 0) / 1000, 3),
+    time_ms: Math.round(finiteNumber(sample.atMs, 0)),
+    x: roundTo(x, 5),
+    y: roundTo(y, 5),
+    type: cue,
+    confidence: roundTo(confidence, 3),
+    duration_ms: attentionEventDurationMs(cue),
+    scale: roundTo(scale, 4),
+    reason: attention.reason || cue,
+    source: attention.source || cue,
+    output_width: outputSize.width,
+    output_height: outputSize.height
+  };
+}
+
+function pushAttentionEvent(events, event) {
+  if (!event) {
+    return;
+  }
+
+  if (!Number.isFinite(event.time) || event.time < 0) {
+    return;
+  }
+
+  if (!Number.isFinite(event.x) || !Number.isFinite(event.y)) {
+    return;
+  }
+
+  events.push({
+    ...event,
+    x: roundTo(clamp01(event.x), 5),
+    y: roundTo(clamp01(event.y), 5),
+    confidence: roundTo(clamp01(event.confidence), 3)
+  });
+}
+
+function buildAttentionTimeline(timelinePlan, outputSize) {
+  const settings = timelinePlan.settings;
+  const events = [];
+  let previousKeptEvent = null;
+
+  for (const sample of timelinePlan.timeline || []) {
+    const event = buildTimelineAttentionEvent(sample, outputSize);
+    if (!event || !shouldKeepAttentionEvent(event, previousKeptEvent)) {
+      continue;
+    }
+
+    pushAttentionEvent(events, event);
+    previousKeptEvent = event;
+  }
+
+  for (const pulse of timelinePlan.pulses || []) {
+    pushAttentionEvent(events, {
+      time: roundTo(finiteNumber(pulse.atMs, 0) / 1000, 3),
+      time_ms: Math.round(finiteNumber(pulse.atMs, 0)),
+      x: roundTo(finiteNumber(pulse.x, 0.5), 5),
+      y: roundTo(finiteNumber(pulse.y, 0.5), 5),
+      type: 'click',
+      confidence: 0.96,
+      duration_ms: 420,
+      scale: roundTo(settings.zoomStrength, 4),
+      reason: 'click pulse',
+      source: 'pulse'
+    });
+  }
+
+  for (const marker of timelinePlan.markers || []) {
+    pushAttentionEvent(events, {
+      time: roundTo(finiteNumber(marker.atMs, 0) / 1000, 3),
+      time_ms: Math.round(finiteNumber(marker.atMs, 0)),
+      x: roundTo(finiteNumber(marker.x, 0.5), 5),
+      y: roundTo(finiteNumber(marker.y, 0.5), 5),
+      type: marker.kind === 'manual' ? 'dwell' : 'attention',
+      confidence: marker.kind === 'manual' ? 0.74 : 0.82,
+      duration_ms: 1100,
+      scale: roundTo(settings.zoomStrength, 4),
+      reason: marker.reason || marker.label || 'marker',
+      source: 'marker',
+      label: marker.label || null
+    });
+  }
+
+  events.sort((a, b) => a.time_ms - b.time_ms || b.confidence - a.confidence);
+
+  return {
+    schema: 'smartie.attention_timeline.v1',
+    version: 1,
+    generated_at: new Date().toISOString(),
+    source: {
+      duration_ms: Math.round(finiteNumber(timelinePlan.durationMs, 0)),
+      duration_sec: roundTo(finiteNumber(timelinePlan.durationMs, 0) / 1000, 3),
+      width: outputSize.width,
+      height: outputSize.height,
+      fps: effectiveRecordingFps(settings)
+    },
+    settings: {
+      focus_mode: settings.focusMode,
+      zoom_strength: settings.zoomStrength,
+      motion_sensitivity: settings.motionSensitivity,
+      smoothing: settings.smoothing,
+      auto_zoom: settings.autoZoom,
+      idle_wide: settings.idleWide
+    },
+    events
+  };
+}
+
 function drawSmartTimelineFrame(settings, timelinePlan, atMs) {
   const sample = timelineSampleAt(timelinePlan.timeline, atMs);
 
@@ -3268,6 +3484,14 @@ async function saveRecording() {
     renderPipeline: shouldPostRender ? 'post-render' : (usesSmartCanvasRecording(settings) ? 'live-canvas' : 'native'),
     timelineSampleCount: timelinePlan.timeline.length
   });
+  const attentionTimeline = buildAttentionTimeline(timelinePlan, finalOutputSize);
+  metadata.integrations = {
+    vex: {
+      bundleSchema: 'smartie.recording_bundle.v1',
+      attentionTimelineSchema: attentionTimeline.schema,
+      attentionEventCount: attentionTimeline.events.length
+    }
+  };
 
   cleanupRecording();
 
@@ -3300,6 +3524,7 @@ async function saveRecording() {
       saveMode: settings.saveMode,
       outputDir: settings.outputDir,
       metadata,
+      attentionTimeline,
       exportFormat: settings.exportFormat
     });
 
@@ -3314,13 +3539,20 @@ async function saveRecording() {
       metadataPath: result.metadataPath,
       chaptersPath: result.chaptersPath,
       mp4Path: result.mp4Path,
+      bundlePath: result.bundlePath,
       sourceName: state.selectedSource ? state.selectedSource.name : null,
       takeTitle: settings.takeTitle,
       durationMs,
       markers,
       createdAt: new Date().toISOString()
     });
-    setStatus(result.mp4Path ? 'Saved + MP4' : 'Saved');
+    if (result.bundleError) {
+      setStatus(result.mp4Path ? 'Saved + MP4 (bundle failed)' : 'Saved (bundle failed)');
+    } else if (result.bundlePath) {
+      setStatus(result.mp4Path ? 'Saved + MP4 + Vex bundle' : 'Saved + Vex bundle');
+    } else {
+      setStatus(result.mp4Path ? 'Saved + MP4' : 'Saved');
+    }
   } catch (error) {
     console.error(error);
     setStatus(error.message || 'Save failed');
