@@ -120,11 +120,25 @@ for (const feature of [
   'lowLatencyMode',
   'recordingEngine',
   'usesSmartCanvasRecording',
+  'usesHybridSmartRender',
+  'usesSmartEffectsOutput',
   'outputLayoutForRecording',
   'captureSizeForSettings',
   'effectiveRecordingFps',
   'recordingBitrate',
   'drawNativePreviewFrame',
+  'captureSmartTimelineFrame',
+  'startSmartTimeline',
+  'stopSmartTimeline',
+  'drawSmartTimelineFrame',
+  'renderSmartEffectsVideo',
+  'waitForMediaEvent',
+  'stopRecorder',
+  'timelineSampleAt',
+  'drawTimelineCursorTrail',
+  'drawTimelinePulses',
+  'drawTimelineMarkerOverlay',
+  'audioSourceBytes',
   'recordingMimeType',
   'recordingSettings',
   'createRecordingCanvasStream',
@@ -140,7 +154,7 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }

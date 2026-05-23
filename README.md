@@ -1,15 +1,17 @@
 # Smartie
 
 Smartie is a Linux-compatible smart screen recorder for polished demo videos.
-It records a selected screen or window through Electron with a native
-low-latency engine by default, and keeps a smart-effects canvas engine available
-when baked zoom, cursor polish, overlays, and framing effects are needed.
+It records a selected screen or window through Electron with a hybrid smart
+pipeline by default: capture stays native and low-latency during the take, then
+the smart zoom, cursor polish, overlays, and framing effects are baked into the
+saved video after recording.
 
 ## Current Features
 
 - Screen and window source picker with live thumbnails.
-- Native smooth recording pipeline for direct desktop capture.
-- Optional canvas-based smart-effects pipeline for baked real-time effects.
+- Hybrid Smartie pipeline that records native video first and post-renders smart effects into the saved file.
+- Native smooth recording pipeline for direct desktop capture when no baked effects are needed.
+- Optional canvas-based live smart-effects pipeline for fully real-time baked effects.
 - Smooth smart zoom that follows the cursor and eases back out when idle.
 - Smart focus modes for cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Master Smart Features toggle plus individual toggles for:
@@ -43,7 +45,7 @@ when baked zoom, cursor polish, overlays, and framing effects are needed.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
 - Global recorder shortcuts with Wayland portal support where available.
-- Low-latency native recording engine, smart-effects engine, render-load presets, quality presets,
+- Low-latency Smartie hybrid engine, native recording engine, live smart-effects engine, render-load presets, quality presets,
   frame-rate control, smart-effects layout control, countdown, elapsed timer, WebM export, and optional bundled-FFmpeg MP4 copy.
 - Linux desktop support through Electron desktop capture APIs.
 
@@ -101,8 +103,7 @@ npm run package:linux
 ## Notes
 
 Smartie always writes the primary recording as WebM and can also create a
-bundled-FFmpeg MP4 copy. Use the default Native smooth engine for the lightest,
-highest-quality capture path; it records the desktop stream directly and stores
-smart markers/settings in sidecar files. Use Smart effects when the zoom,
-framing, title, cue, camera, cursor, or privacy effects must be rendered into
-the video during recording.
+bundled-FFmpeg MP4 copy. Use the default Smartie hybrid engine for smooth
+capture with baked smart zoom and overlays. Use Native smooth only for raw
+desktop capture without baked smart effects. Use Live smart effects when effects
+must be rendered during recording instead of after stop.

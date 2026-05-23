@@ -105,6 +105,7 @@ const state = {
   recordingMimeType: null,
   recordedVideoSize: null,
   recordingSettings: null,
+  stoppedDurationMs: 0,
   chunks: [],
   drawing: false,
   recording: false,
@@ -116,6 +117,11 @@ const state = {
   timerId: null,
   lastDrawAt: 0,
   pointerPollId: null,
+  smartTimelineId: null,
+  smartTimeline: [],
+  smartTrail: [],
+  smartPulses: [],
+  renderContext: null,
   trail: [],
   lastRecordingPath: null,
   recentRecordings: [],
@@ -255,6 +261,9 @@ const recentStoreKey = 'smartie.recent.v1';
 function loadPersistedSettings() {
   try {
     const settings = JSON.parse(localStorage.getItem(settingsStoreKey) || '{}');
+    if (settings.recordingEngine === 'native' && settings.smartMaster !== false) {
+      settings.recordingEngine = 'hybrid';
+    }
 
     for (const key of persistedSettingKeys) {
       if (!(key in settings) || !elements[key]) {
@@ -408,7 +417,7 @@ function canvasSizeForSettings(settings = getSettings()) {
 }
 
 function performanceProfile(settings = getSettings()) {
-  if (!settings.smoothRecording) {
+  if (!settings.smoothRecording || usesHybridSmartRender(settings)) {
     return performanceProfiles.quality;
   }
 
@@ -438,20 +447,30 @@ function capCanvasSize(size, maxShortSide) {
 }
 
 function lowLatencyMode(settings = getSettings()) {
-  return settings.smoothRecording && settings.performanceMode === 'ultra';
+  return settings.smoothRecording && usesSmartCanvasRecording(settings) && settings.performanceMode === 'ultra';
 }
 
 function usesSmartCanvasRecording(settings = getSettings()) {
   return settings.recordingEngine === 'smart';
 }
 
+function usesHybridSmartRender(settings = getSettings()) {
+  return settings.recordingEngine === 'hybrid';
+}
+
+function usesSmartEffectsOutput(settings = getSettings()) {
+  return usesSmartCanvasRecording(settings) || usesHybridSmartRender(settings);
+}
+
 function outputLayoutForRecording(settings = getSettings()) {
-  return usesSmartCanvasRecording(settings) ? settings.outputLayout : 'landscape';
+  return usesSmartEffectsOutput(settings) ? settings.outputLayout : 'landscape';
 }
 
 function effectiveRecordingFps(settings = getSettings()) {
   const requestedFps = Number(settings.fps) || 30;
-  return settings.smoothRecording ? Math.min(requestedFps, 30) : requestedFps;
+  return settings.smoothRecording && usesSmartCanvasRecording(settings)
+    ? Math.min(requestedFps, 30)
+    : requestedFps;
 }
 
 function effectiveDrawFps(settings = getSettings()) {
@@ -602,12 +621,20 @@ function updateTimer() {
 }
 
 function recordingElapsedMs(now = Date.now()) {
+  if (!state.recording && state.stoppedDurationMs > 0) {
+    return state.stoppedDurationMs;
+  }
+
   if (!state.recording && state.startedAt === 0) {
     return 0;
   }
 
   const effectiveNow = state.paused ? state.pausedAt : now;
   return Math.max(0, effectiveNow - state.startedAt - state.pausedDuration);
+}
+
+function currentRenderMs() {
+  return state.renderContext ? state.renderContext.atMs : recordingElapsedMs();
 }
 
 function resetHealth() {
@@ -637,7 +664,7 @@ function renderHealth() {
 
   const settings = state.recordingSettings || getSettings();
   if (!usesSmartCanvasRecording(settings)) {
-    elements.healthText.textContent = 'Native';
+    elements.healthText.textContent = usesHybridSmartRender(settings) ? 'Smartie' : 'Native';
     elements.healthText.classList.add('good');
     return;
   }
@@ -691,13 +718,13 @@ function syncControls() {
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
   const settings = getSettings();
-  if (!usesSmartCanvasRecording(settings) && settings.outputLayout !== 'landscape') {
+  if (!usesSmartEffectsOutput(settings) && settings.outputLayout !== 'landscape') {
     elements.outputLayout.value = 'landscape';
     settings.outputLayout = 'landscape';
   }
 
   elements.quality.disabled = state.recording;
-  elements.outputLayout.disabled = state.recording || !usesSmartCanvasRecording(settings);
+  elements.outputLayout.disabled = state.recording || !usesSmartEffectsOutput(settings);
   elements.fps.disabled = state.recording;
   elements.smoothRecording.disabled = state.recording;
   elements.recordingEngine.disabled = state.recording;
@@ -929,6 +956,23 @@ function recordSmartMoment(settings, reason, x = state.pointer.x, y = state.poin
   }
 }
 
+function pushSmartPulse(x = state.pointer.x, y = state.pointer.y) {
+  state.pulse = {
+    active: true,
+    startedAt: performance.now(),
+    x,
+    y
+  };
+
+  if (state.recording && !state.paused && usesHybridSmartRender(state.recordingSettings || getSettings())) {
+    state.smartPulses.push({
+      atMs: recordingElapsedMs(),
+      x,
+      y
+    });
+  }
+}
+
 async function chooseOutputFolder() {
   const folder = await window.smartie.chooseOutputDir();
   if (!folder) {
@@ -1097,21 +1141,21 @@ function mapPointerToCapture(pointerPayload) {
 
   if (velocity > 0.002) {
     state.pointer.lastMovedAt = performance.now();
+    const atMs = state.recording ? recordingElapsedMs() : 0;
     state.trail.push({
       x,
       y,
-      at: performance.now()
+      at: performance.now(),
+      atMs
     });
+    if (state.recording && !state.paused && usesHybridSmartRender(state.recordingSettings || settings)) {
+      state.smartTrail.push({ x, y, atMs });
+    }
     state.trail = state.trail.slice(lowLatencyMode(settings) ? -12 : -28);
   }
 
   if (velocity > 0.055 && settings.clickPulse) {
-    state.pulse = {
-      active: true,
-      startedAt: performance.now(),
-      x,
-      y
-    };
+    pushSmartPulse(x, y);
   }
 
   if (velocity > 0.072) {
@@ -1195,6 +1239,49 @@ function stopPointerPolling() {
   if (state.pointerPollId) {
     window.clearInterval(state.pointerPollId);
     state.pointerPollId = null;
+  }
+}
+
+function captureSmartTimelineFrame(settings = state.recordingSettings || getSettings()) {
+  if (!state.recording || state.paused || !usesHybridSmartRender(settings)) {
+    return;
+  }
+
+  const timestamp = performance.now();
+  scanMotionTarget(settings, timestamp);
+  easeFrame(settings);
+  state.smartTimeline.push({
+    atMs: recordingElapsedMs(),
+    frame: {
+      scale: state.frame.scale,
+      x: state.frame.x,
+      y: state.frame.y
+    },
+    pointer: {
+      x: state.pointer.x,
+      y: state.pointer.y
+    },
+    keys: state.keys.slice(-4)
+  });
+}
+
+function startSmartTimeline(settings) {
+  stopSmartTimeline();
+  if (!usesHybridSmartRender(settings)) {
+    return;
+  }
+
+  captureSmartTimelineFrame(settings);
+  const sampleFps = Math.min(60, Math.max(24, effectiveRecordingFps(settings)));
+  state.smartTimelineId = window.setInterval(() => {
+    captureSmartTimelineFrame(settings);
+  }, Math.round(1000 / sampleFps));
+}
+
+function stopSmartTimeline() {
+  if (state.smartTimelineId) {
+    window.clearInterval(state.smartTimelineId);
+    state.smartTimelineId = null;
   }
 }
 
@@ -1539,6 +1626,43 @@ function drawCursorTrail(settings) {
   state.trail = state.trail.filter((point) => now - point.at < 900);
 }
 
+function drawTimelineCursorTrail(settings, atMs, trail) {
+  if (!settings.smartMaster || !settings.cursorTrail || trail.length < 2) {
+    return;
+  }
+
+  const points = trail
+    .filter((point) => atMs >= point.atMs && atMs - point.atMs < 900)
+    .slice(-28);
+  if (points.length < 2) {
+    return;
+  }
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let i = 1; i < points.length; i += 1) {
+    const previous = points[i - 1];
+    const current = points[i];
+    const age = atMs - current.atMs;
+    const opacity = Math.max(0, 1 - age / 900);
+
+    if (opacity <= 0) {
+      continue;
+    }
+
+    ctx.strokeStyle = `rgba(66, 214, 198, ${opacity * 0.72})`;
+    ctx.lineWidth = Math.max(5, canvas.width * 0.004) * opacity;
+    ctx.beginPath();
+    ctx.moveTo(previous.x * canvas.width, previous.y * canvas.height);
+    ctx.lineTo(current.x * canvas.width, current.y * canvas.height);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 function drawPulse(settings) {
   if (!settings.smartMaster || !settings.clickPulse || !state.pulse.active) {
     return;
@@ -1562,6 +1686,32 @@ function drawPulse(settings) {
   ctx.arc(x, y, radius, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
+}
+
+function drawTimelinePulses(settings, atMs, pulses) {
+  if (!settings.smartMaster || !settings.clickPulse || pulses.length === 0) {
+    return;
+  }
+
+  for (const pulse of pulses) {
+    const elapsed = atMs - pulse.atMs;
+    if (elapsed < 0 || elapsed > 620) {
+      continue;
+    }
+
+    const progress = elapsed / 620;
+    const x = canvas.width * pulse.x;
+    const y = canvas.height * pulse.y;
+    const radius = canvas.width * (0.02 + progress * 0.05);
+
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 191, 90, ${1 - progress})`;
+    ctx.lineWidth = Math.max(5, canvas.width * 0.003);
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function drawKeyboardOverlay(settings) {
@@ -1613,6 +1763,40 @@ function drawMarkerOverlay(settings) {
   const y = 40;
   const boxHeight = 62;
   const text = `${state.activeMarker.label}  ${formatTime(state.activeMarker.atMs)}`;
+
+  ctx.save();
+  ctx.font = '800 26px system-ui, sans-serif';
+  const boxWidth = Math.min(width - 80, ctx.measureText(text).width + paddingX * 2);
+  ctx.globalAlpha = Math.min(1, 1.2 - elapsed / 1800);
+  ctx.fillStyle = 'rgba(16, 17, 20, 0.84)';
+  ctx.strokeStyle = 'rgba(255, 191, 90, 0.9)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, x, y, boxWidth, boxHeight, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#f4f1ea';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + paddingX, y + boxHeight / 2);
+  ctx.restore();
+}
+
+function drawTimelineMarkerOverlay(settings, atMs, markers) {
+  if (!settings.smartMaster || !markers.length) {
+    return;
+  }
+
+  const marker = markers.findLast((item) => atMs >= item.atMs && atMs - item.atMs <= 1800);
+  if (!marker) {
+    return;
+  }
+
+  const elapsed = atMs - marker.atMs;
+  const width = canvas.width;
+  const paddingX = 24;
+  const x = 40;
+  const y = 40;
+  const boxHeight = 62;
+  const text = `${marker.label}  ${formatTime(marker.atMs)}`;
 
   ctx.save();
   ctx.font = '800 26px system-ui, sans-serif';
@@ -1716,11 +1900,11 @@ function wrapCueText(context, text, maxWidth, maxLines) {
 
 function drawTitleOverlay(settings) {
   const title = cleanTitle(settings.takeTitle);
-  if (!settings.smartMaster || !settings.titleOverlay || !title || !state.recording) {
+  if (!settings.smartMaster || !settings.titleOverlay || !title || (!state.recording && !state.renderContext)) {
     return;
   }
 
-  const elapsed = recordingElapsedMs();
+  const elapsed = currentRenderMs();
   const introDuration = Math.max(0, settings.titleDuration);
   const showIntro = introDuration > 0 && elapsed < introDuration;
   const lowerThirdUntil = introDuration + 4600;
@@ -1806,7 +1990,7 @@ function drawTitleOverlay(settings) {
 
 function drawCueOverlay(settings) {
   const text = cleanCueText(settings.cueText);
-  if (!settings.smartMaster || !settings.cueOverlay || !text || !state.recording) {
+  if (!settings.smartMaster || !settings.cueOverlay || !text || (!state.recording && !state.renderContext)) {
     return;
   }
 
@@ -1901,6 +2085,74 @@ function roundRect(context, x, y, width, height, radius) {
   context.arcTo(x, y + height, x, y, r);
   context.arcTo(x, y, x + width, y, r);
   context.closePath();
+}
+
+function timelineSampleAt(timeline, atMs) {
+  if (timeline.length === 0) {
+    return {
+      frame: { scale: 1, x: 0.5, y: 0.5 },
+      pointer: { x: 0.5, y: 0.5 },
+      keys: []
+    };
+  }
+
+  let low = 0;
+  let high = timeline.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (timeline[middle].atMs <= atMs) {
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  const before = timeline[Math.max(0, high)];
+  const after = timeline[Math.min(timeline.length - 1, low)];
+  if (!before || before === after) {
+    return before || after;
+  }
+
+  const span = Math.max(1, after.atMs - before.atMs);
+  const t = Math.min(1, Math.max(0, (atMs - before.atMs) / span));
+  const mix = (start, end) => start + (end - start) * t;
+
+  return {
+    atMs,
+    frame: {
+      scale: mix(before.frame.scale, after.frame.scale),
+      x: mix(before.frame.x, after.frame.x),
+      y: mix(before.frame.y, after.frame.y)
+    },
+    pointer: {
+      x: mix(before.pointer.x, after.pointer.x),
+      y: mix(before.pointer.y, after.pointer.y)
+    },
+    keys: before.keys || []
+  };
+}
+
+function drawSmartTimelineFrame(settings, timelinePlan, atMs) {
+  const sample = timelineSampleAt(timelinePlan.timeline, atMs);
+
+  state.renderContext = { atMs };
+  state.frame = { ...sample.frame };
+  state.pointer = {
+    ...state.pointer,
+    x: sample.pointer.x,
+    y: sample.pointer.y
+  };
+  state.keys = sample.keys || [];
+
+  drawVideoFrame(settings);
+  drawPrivacyBlur(settings);
+  drawTimelineCursorTrail(settings, atMs, timelinePlan.trail);
+  drawCursorSpotlight(settings);
+  drawTimelinePulses(settings, atMs, timelinePlan.pulses);
+  drawTimelineMarkerOverlay(settings, atMs, timelinePlan.markers);
+  drawKeyboardOverlay(settings);
+  drawTitleOverlay(settings);
+  drawCueOverlay(settings);
 }
 
 function drawLoop(timestamp = performance.now()) {
@@ -2099,6 +2351,145 @@ function recorderMimeType() {
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
 }
 
+function waitForMediaEvent(target, eventName) {
+  return new Promise((resolve, reject) => {
+    const onEvent = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error(target.error?.message || `Media ${eventName} failed.`));
+    };
+    const cleanup = () => {
+      target.removeEventListener(eventName, onEvent);
+      target.removeEventListener('error', onError);
+    };
+
+    target.addEventListener(eventName, onEvent, { once: true });
+    target.addEventListener('error', onError, { once: true });
+  });
+}
+
+function stopRecorder(recorder) {
+  return new Promise((resolve) => {
+    if (!recorder || recorder.state === 'inactive') {
+      resolve();
+      return;
+    }
+
+    recorder.addEventListener('stop', resolve, { once: true });
+    recorder.stop();
+  });
+}
+
+async function renderSmartEffectsVideo(rawBlob, timelinePlan) {
+  const settings = timelinePlan.settings;
+  const mimeType = recorderMimeType();
+  const outputSize = canvasSizeForSettings(settings);
+  const objectUrl = URL.createObjectURL(rawBlob);
+  const previousSrcObject = video.srcObject;
+  const previousSrc = video.currentSrc || video.src;
+  const previousMuted = video.muted;
+  const previousLoop = video.loop;
+  const previousPlaybackRate = video.playbackRate;
+  const chunks = [];
+  let frameId = null;
+  let lastStatusAt = 0;
+  let renderStream = null;
+  let recorder = null;
+
+  try {
+    canvas.width = outputSize.width;
+    canvas.height = outputSize.height;
+    video.pause();
+    video.srcObject = null;
+    video.muted = true;
+    video.loop = false;
+    video.playbackRate = 1;
+    video.src = objectUrl;
+    video.load();
+    await waitForMediaEvent(video, 'loadedmetadata');
+
+    const fps = effectiveRecordingFps(settings);
+    renderStream = canvas.captureStream(fps);
+    const recorderOptions = {
+      videoBitsPerSecond: recordingBitrate(settings)
+    };
+    if (mimeType) {
+      recorderOptions.mimeType = mimeType;
+    }
+
+    const [renderTrack] = renderStream.getVideoTracks();
+    tuneScreenVideoTrack(renderTrack);
+    recorder = new MediaRecorder(renderStream, recorderOptions);
+    recorder.addEventListener('dataavailable', (event) => {
+      if (event.data && event.data.size > 0) {
+        chunks.push(event.data);
+      }
+    });
+
+    recorder.start(1000);
+    const ended = waitForMediaEvent(video, 'ended');
+    const draw = () => {
+      const atMs = Math.min(timelinePlan.durationMs, video.currentTime * 1000);
+      drawSmartTimelineFrame(settings, timelinePlan, atMs);
+      if (renderTrack && typeof renderTrack.requestFrame === 'function') {
+        renderTrack.requestFrame();
+      }
+
+      if (performance.now() - lastStatusAt > 500) {
+        lastStatusAt = performance.now();
+        const progress = timelinePlan.durationMs > 0
+          ? Math.min(99, Math.round((atMs / timelinePlan.durationMs) * 100))
+          : 99;
+        setStatus(`Rendering smart effects ${progress}%`);
+      }
+
+      if (!video.ended) {
+        frameId = requestAnimationFrame(draw);
+      }
+    };
+
+    draw();
+    await video.play();
+    await ended;
+    drawSmartTimelineFrame(settings, timelinePlan, timelinePlan.durationMs);
+    if (renderTrack && typeof renderTrack.requestFrame === 'function') {
+      renderTrack.requestFrame();
+    }
+    await stopRecorder(recorder);
+    return new Blob(chunks, { type: recorder.mimeType || mimeType || 'video/webm' });
+  } finally {
+    if (frameId) {
+      cancelAnimationFrame(frameId);
+    }
+    video.pause();
+    video.removeAttribute('src');
+    video.srcObject = previousSrcObject;
+    if (!previousSrcObject && previousSrc) {
+      video.src = previousSrc;
+    }
+    video.muted = previousMuted;
+    video.loop = previousLoop;
+    video.playbackRate = previousPlaybackRate;
+    video.load();
+    if (recorder && recorder.state !== 'inactive') {
+      try {
+        await stopRecorder(recorder);
+      } catch (error) {
+        console.warn('Could not stop smart render recorder.', error);
+      }
+    }
+    stopStream(renderStream);
+    state.renderContext = null;
+    state.keys = [];
+    URL.revokeObjectURL(objectUrl);
+    resizeCanvasForProfile();
+    drawWaitingFrame();
+  }
+}
+
 function buildSuggestedName(settings = getSettings()) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const title = fileSafeTitle(settings.takeTitle);
@@ -2127,8 +2518,16 @@ function canvasPngBytes() {
   });
 }
 
-function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }) {
-  const outputSize = state.recordedVideoSize || canvasSizeForSettings(settings);
+function buildRecordingMetadata({
+  suggestedName,
+  durationMs,
+  markers,
+  settings,
+  outputSize: outputSizeOverride = null,
+  renderPipeline = 'live',
+  timelineSampleCount = 0
+}) {
+  const outputSize = outputSizeOverride || state.recordedVideoSize || canvasSizeForSettings(settings);
 
   return {
     app: 'Smartie',
@@ -2183,6 +2582,8 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       requestedFps: settings.fps,
       smoothRecording: settings.smoothRecording,
       recordingEngine: settings.recordingEngine,
+      renderPipeline,
+      timelineSampleCount,
       performanceMode: settings.smoothRecording ? settings.performanceMode : 'quality',
       manualFramePump: Boolean(state.canvasVideoTrack && typeof state.canvasVideoTrack.requestFrame === 'function'),
       bitrate: recordingBitrate(settings),
@@ -2217,6 +2618,7 @@ async function startRecording() {
     resizeCanvasForProfile();
     const settings = getSettings();
     state.recordingSettings = { ...settings };
+    state.stoppedDurationMs = 0;
     await runCountdown(settings.countdownSeconds);
     await hideWindowForRecording(settings);
 
@@ -2258,6 +2660,9 @@ async function startRecording() {
     state.lastAutoMarkerAt = -Infinity;
     state.lastDrawAt = 0;
     state.discardRequested = false;
+    state.smartTimeline = [];
+    state.smartTrail = [];
+    state.smartPulses = [];
     state.mediaRecorder = new MediaRecorder(state.canvasStream, recorderOptions);
     state.recordingMimeType = state.mediaRecorder.mimeType || mimeType || 'video/webm';
 
@@ -2283,6 +2688,7 @@ async function startRecording() {
     state.motionTarget.strength = 0;
     state.trail = [];
     startPointerPolling();
+    startSmartTimeline(settings);
     if (usesSmartCanvasRecording(settings) || !settings.hideWhileRecording) {
       requestAnimationFrame(drawLoop);
     } else {
@@ -2343,6 +2749,8 @@ function stopRecording() {
   }
 
   setStatus('Finalizing');
+  state.stoppedDurationMs = recordingElapsedMs();
+  stopSmartTimeline();
   state.mediaRecorder.stop();
   state.recording = false;
   state.paused = false;
@@ -2453,6 +2861,7 @@ function cleanupRecording() {
   state.lastAutoMarkerAt = -Infinity;
   state.lastDrawAt = 0;
   stopPointerPolling();
+  stopSmartTimeline();
   stopMicMeter();
   window.clearInterval(state.timerId);
   state.timerId = null;
@@ -2482,6 +2891,14 @@ function cleanupRecording() {
   state.recordingMimeType = null;
   state.recordedVideoSize = null;
   state.recordingSettings = null;
+  state.startedAt = 0;
+  state.pausedAt = 0;
+  state.pausedDuration = 0;
+  state.stoppedDurationMs = 0;
+  state.smartTimeline = [];
+  state.smartTrail = [];
+  state.smartPulses = [];
+  state.renderContext = null;
   video.srcObject = null;
   cameraVideo.srcObject = null;
   elements.recordingDot.classList.remove('active');
@@ -2504,24 +2921,64 @@ async function saveRecording() {
   }
 
   const mimeType = state.recordingMimeType || recorderMimeType() || 'video/webm';
-  const blob = new Blob(state.chunks, { type: mimeType });
-  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const rawBlob = new Blob(state.chunks, { type: mimeType });
   const settings = state.recordingSettings || getSettings();
-  const durationMs = recordingElapsedMs();
+  const durationMs = state.stoppedDurationMs || recordingElapsedMs();
   const markers = state.markers.slice();
+  const timelinePlan = {
+    settings,
+    durationMs,
+    markers,
+    timeline: state.smartTimeline.slice(),
+    trail: state.smartTrail.slice(),
+    pulses: state.smartPulses.slice()
+  };
+  const shouldPostRender = usesHybridSmartRender(settings)
+    && settings.smartMaster
+    && timelinePlan.timeline.length > 1
+    && !state.discardRequested;
   const suggestedName = buildSuggestedName(settings);
+  const rawOutputSize = state.recordedVideoSize || canvasSizeForSettings(settings);
+  const finalOutputSize = shouldPostRender
+    ? canvasSizeForSettings(settings)
+    : rawOutputSize;
   const metadata = buildRecordingMetadata({
     suggestedName,
     durationMs,
     markers,
-    settings
+    settings,
+    outputSize: finalOutputSize,
+    renderPipeline: shouldPostRender ? 'post-render' : (usesSmartCanvasRecording(settings) ? 'live-canvas' : 'native'),
+    timelineSampleCount: timelinePlan.timeline.length
   });
 
   cleanupRecording();
 
   try {
+    let outputBlob = rawBlob;
+    let audioSourceBytes = null;
+
+    if (shouldPostRender) {
+      try {
+        setStatus('Rendering smart effects 0%');
+        outputBlob = await renderSmartEffectsVideo(rawBlob, timelinePlan);
+        audioSourceBytes = new Uint8Array(await rawBlob.arrayBuffer());
+        metadata.capture.audioMux = 'ffmpeg';
+      } catch (error) {
+        console.error('Smart post-render failed; saving native recording instead.', error);
+        outputBlob = rawBlob;
+        metadata.capture.renderPipeline = 'native-fallback';
+        metadata.capture.renderError = error.message || 'Smart post-render failed';
+        metadata.capture.outputWidth = rawOutputSize.width;
+        metadata.capture.outputHeight = rawOutputSize.height;
+      }
+    }
+
+    const bytes = new Uint8Array(await outputBlob.arrayBuffer());
+    setStatus(audioSourceBytes ? 'Muxing audio' : 'Saving');
     const result = await window.smartie.saveRecording({
       bytes,
+      audioSourceBytes,
       suggestedName,
       saveMode: settings.saveMode,
       outputDir: settings.outputDir,
@@ -2551,6 +3008,7 @@ async function saveRecording() {
     console.error(error);
     setStatus(error.message || 'Save failed');
   } finally {
+    state.chunks = [];
     syncControls();
   }
 }
@@ -2689,12 +3147,7 @@ window.addEventListener('click', (event) => {
   }
 
   if (settings.clickPulse) {
-    state.pulse = {
-      active: true,
-      startedAt: performance.now(),
-      x,
-      y
-    };
+    pushSmartPulse(x, y);
   }
 
   recordSmartMoment(settings, 'preview click', x, y);

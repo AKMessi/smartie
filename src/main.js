@@ -304,9 +304,69 @@ function transcodeToMp4(inputPath, outputPath) {
   });
 }
 
-async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm') {
+function muxAudioIntoWebm(videoPath, audioSourcePath, outputPath) {
+  const binaryPath = resolvedFfmpegPath();
+  if (!binaryPath) {
+    throw new Error('Bundled FFmpeg is unavailable on this platform.');
+  }
+
+  const args = [
+    '-y',
+    '-i',
+    videoPath,
+    '-i',
+    audioSourcePath,
+    '-map',
+    '0:v:0',
+    '-map',
+    '1:a?',
+    '-c:v',
+    'copy',
+    '-c:a',
+    'copy',
+    '-shortest',
+    outputPath
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(binaryPath, args, {
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    let errorOutput = '';
+
+    child.stderr.on('data', (chunk) => {
+      errorOutput += chunk.toString();
+    });
+
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`FFmpeg mux exited with code ${code}: ${errorOutput.slice(-1000)}`));
+    });
+  });
+}
+
+async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm', audioSourceBytes = null) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, Buffer.from(bytes));
+  if (audioSourceBytes) {
+    const tempBase = `${filePath}.${Date.now()}`;
+    const tempVideoPath = `${tempBase}.video-only.webm`;
+    const tempAudioPath = `${tempBase}.audio-source.webm`;
+    await fs.writeFile(tempVideoPath, Buffer.from(bytes));
+    await fs.writeFile(tempAudioPath, Buffer.from(audioSourceBytes));
+    try {
+      await muxAudioIntoWebm(tempVideoPath, tempAudioPath, filePath);
+    } finally {
+      await fs.rm(tempVideoPath, { force: true });
+      await fs.rm(tempAudioPath, { force: true });
+    }
+  } else {
+    await fs.writeFile(filePath, Buffer.from(bytes));
+  }
 
   if (!metadata) {
     return {
@@ -368,7 +428,7 @@ ipcMain.handle('smartie:get-pointer', () => ({
 }));
 
 ipcMain.handle('smartie:save-recording', async (_event, payload) => {
-  const { bytes, suggestedName, saveMode, outputDir, metadata, exportFormat } = payload || {};
+  const { bytes, audioSourceBytes, suggestedName, saveMode, outputDir, metadata, exportFormat } = payload || {};
   if (!bytes) {
     throw new Error('No recording data received.');
   }
@@ -376,7 +436,7 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
   if (saveMode === 'auto') {
     const directory = outputDir || defaultRecordingDirectory();
     const filePath = path.join(directory, suggestedName || path.basename(defaultRecordingPath()));
-    const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat);
+    const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat, audioSourceBytes);
     return {
       canceled: false,
       ...saved
@@ -402,7 +462,7 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
     return { canceled: true };
   }
 
-  const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat);
+  const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat, audioSourceBytes);
   return {
     canceled: false,
     ...saved
