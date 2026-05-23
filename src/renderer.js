@@ -42,6 +42,7 @@ const elements = {
   outputLayout: document.querySelector('#outputLayout'),
   fps: document.querySelector('#fps'),
   fpsValue: document.querySelector('#fpsValue'),
+  smoothRecording: document.querySelector('#smoothRecording'),
   takeTitle: document.querySelector('#takeTitle'),
   titleDuration: document.querySelector('#titleDuration'),
   cueText: document.querySelector('#cueText'),
@@ -107,6 +108,7 @@ const state = {
   pausedAt: 0,
   pausedDuration: 0,
   timerId: null,
+  lastDrawAt: 0,
   pointerPollId: null,
   trail: [],
   lastRecordingPath: null,
@@ -164,17 +166,17 @@ const state = {
 
 const qualityProfiles = {
   balanced: {
-    bitsPerSecond: 9_000_000,
+    bitsPerSecond: 6_000_000,
     width: 1920,
     height: 1080
   },
   crisp: {
-    bitsPerSecond: 15_000_000,
+    bitsPerSecond: 10_000_000,
     width: 2560,
     height: 1440
   },
   cinematic: {
-    bitsPerSecond: 22_000_000,
+    bitsPerSecond: 16_000_000,
     width: 3840,
     height: 2160
   }
@@ -196,6 +198,7 @@ const persistedSettingKeys = [
   'quality',
   'outputLayout',
   'fps',
+  'smoothRecording',
   'takeTitle',
   'titleDuration',
   'cueText',
@@ -376,6 +379,18 @@ function canvasSizeForSettings(settings = getSettings()) {
   };
 }
 
+function effectiveRecordingFps(settings = getSettings()) {
+  const requestedFps = Number(settings.fps) || 30;
+  return settings.smoothRecording ? Math.min(requestedFps, 30) : requestedFps;
+}
+
+function recordingBitrate(settings = getSettings()) {
+  const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
+  return settings.smoothRecording
+    ? Math.round(profile.bitsPerSecond * 0.82)
+    : profile.bitsPerSecond;
+}
+
 function renderRecentRecordings() {
   elements.recentList.textContent = '';
   elements.clearRecent.disabled = state.recentRecordings.length === 0;
@@ -453,6 +468,7 @@ function getSettings() {
     quality: elements.quality.value,
     outputLayout: elements.outputLayout.value,
     fps: Number(elements.fps.value),
+    smoothRecording: elements.smoothRecording.checked,
     takeTitle: cleanTitle(elements.takeTitle.value),
     titleDuration: Number(elements.titleDuration.value),
     cueText: cleanCueText(elements.cueText.value),
@@ -535,7 +551,7 @@ function renderHealth() {
     return;
   }
 
-  const targetFps = getSettings().fps;
+  const targetFps = effectiveRecordingFps(getSettings());
   const isHealthy = state.health.fps >= targetFps * 0.75 && state.health.droppedFrames === 0;
   elements.healthText.textContent = state.health.droppedFrames > 0
     ? `${state.health.fps} fps / ${state.health.droppedFrames} drops`
@@ -597,7 +613,11 @@ function syncControls() {
     input.disabled = !elements.smartMaster.checked;
   }
 
-  elements.fpsValue.textContent = `${elements.fps.value} fps`;
+  const settings = getSettings();
+  const effectiveFps = effectiveRecordingFps(settings);
+  elements.fpsValue.textContent = effectiveFps === settings.fps
+    ? `${settings.fps} fps`
+    : `${settings.fps} fps (${effectiveFps} effective)`;
   elements.micGainValue.textContent = `${Math.round(Number(elements.micGain.value) * 100)}%`;
   elements.noiseGateThresholdValue.textContent = `${Math.round(Number(elements.noiseGateThreshold.value) * 100)}%`;
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
@@ -999,7 +1019,8 @@ function scanMotionTarget(settings, timestamp) {
     && settings.focusMode === 'motion'
     && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
 
-  if (!shouldScan || timestamp - state.motionTarget.lastScanAt < 180) {
+  const scanInterval = settings.smoothRecording ? 280 : 180;
+  if (!shouldScan || timestamp - state.motionTarget.lastScanAt < scanInterval) {
     return;
   }
 
@@ -1197,7 +1218,7 @@ function drawVideoFrame(settings) {
   ctx.fillStyle = '#07080a';
   ctx.fillRect(0, 0, width, height);
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
+  ctx.imageSmoothingQuality = settings.smoothRecording ? 'medium' : 'high';
   ctx.drawImage(video, drawX, drawY, drawWidth, drawHeight);
 
   if (settings.smartMaster && settings.motionFocus && state.frame.scale > 1.03) {
@@ -1690,8 +1711,17 @@ function drawLoop(timestamp = performance.now()) {
   }
 
   const settings = getSettings();
+  const effectiveFps = effectiveRecordingFps(settings);
+  const frameBudget = 1000 / effectiveFps;
+
+  if (state.lastDrawAt > 0 && timestamp - state.lastDrawAt < frameBudget * 0.92) {
+    requestAnimationFrame(drawLoop);
+    return;
+  }
+
+  state.lastDrawAt = timestamp;
   scanMotionTarget(settings, timestamp);
-  updateFrameHealth(timestamp, settings.fps);
+  updateFrameHealth(timestamp, effectiveFps);
   easeFrame(settings);
 
   if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -1715,6 +1745,8 @@ function drawLoop(timestamp = performance.now()) {
 
 async function openCaptureStream(settings = getSettings()) {
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
+  const captureWidth = settings.smoothRecording ? Math.min(profile.width, 1920) : profile.width;
+  const captureHeight = settings.smoothRecording ? Math.min(profile.height, 1080) : profile.height;
   const captureStream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
@@ -1723,9 +1755,9 @@ async function openCaptureStream(settings = getSettings()) {
         chromeMediaSourceId: state.selectedSource.id,
         minWidth: 1280,
         minHeight: 720,
-        maxWidth: Math.max(profile.width, 3840),
-        maxHeight: Math.max(profile.height, 2160),
-        maxFrameRate: settings.fps
+        maxWidth: captureWidth,
+        maxHeight: captureHeight,
+        maxFrameRate: effectiveRecordingFps(settings)
       }
     }
   });
@@ -1846,8 +1878,8 @@ async function runCountdown(seconds) {
 
 function recorderMimeType() {
   const candidates = [
-    'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp9,opus',
     'video/webm'
   ];
 
@@ -1932,7 +1964,10 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
       outputLayout: settings.outputLayout,
       outputWidth: outputSize.width,
       outputHeight: outputSize.height,
-      fps: settings.fps,
+      fps: effectiveRecordingFps(settings),
+      requestedFps: settings.fps,
+      smoothRecording: settings.smoothRecording,
+      bitrate: recordingBitrate(settings),
       microphone: settings.microphone,
       micDevice: settings.micDevice || 'default',
       micDeviceLabel: settings.micDeviceLabel,
@@ -1969,7 +2004,8 @@ async function startRecording() {
     state.captureStream = await openCaptureStream(settings);
     state.micStream = await openMicrophoneStream(settings);
     state.cameraStream = await openCameraStream(settings);
-    state.canvasStream = canvas.captureStream(settings.fps);
+    const effectiveFps = effectiveRecordingFps(settings);
+    state.canvasStream = canvas.captureStream(effectiveFps);
 
     if (state.micStream) {
       for (const track of state.micStream.getAudioTracks()) {
@@ -1978,15 +2014,15 @@ async function startRecording() {
     }
 
     const mimeType = recorderMimeType();
-    const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
     state.chunks = [];
     state.markers = [];
     state.activeMarker = null;
     state.lastAutoMarkerAt = -Infinity;
+    state.lastDrawAt = 0;
     state.discardRequested = false;
     state.mediaRecorder = new MediaRecorder(state.canvasStream, {
       mimeType,
-      videoBitsPerSecond: profile.bitsPerSecond
+      videoBitsPerSecond: recordingBitrate(settings)
     });
 
     state.mediaRecorder.addEventListener('dataavailable', (event) => {
@@ -2172,6 +2208,7 @@ function cleanupRecording() {
   state.markers = [];
   state.activeMarker = null;
   state.lastAutoMarkerAt = -Infinity;
+  state.lastDrawAt = 0;
   stopPointerPolling();
   stopMicMeter();
   window.clearInterval(state.timerId);
@@ -2352,6 +2389,7 @@ for (const input of [
   elements.quality,
   elements.outputLayout,
   elements.fps,
+  elements.smoothRecording,
   elements.takeTitle,
   elements.titleDuration,
   elements.cueText,

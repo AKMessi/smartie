@@ -43,7 +43,7 @@ master feature toggle.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
 - Global recorder shortcuts with Wayland portal support where available.
-- Quality presets, output layout control, frame-rate control, countdown,
+- Smooth recording mode, quality presets, output layout control, frame-rate control, countdown,
   elapsed timer, WebM export, and optional bundled-FFmpeg MP4 copy.
 - Linux desktop support through Electron desktop capture APIs.
 

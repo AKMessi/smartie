@@ -113,6 +113,9 @@ for (const feature of [
   'restoreRecordingWindow',
   'buildRecordingMetadata',
   'exportFormat',
+  'smoothRecording',
+  'effectiveRecordingFps',
+  'recordingBitrate',
   'captureSnapshot',
   'canvasPngBytes'
 ]) {
