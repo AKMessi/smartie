@@ -44,6 +44,7 @@ const elements = {
   fpsValue: document.querySelector('#fpsValue'),
   smoothRecording: document.querySelector('#smoothRecording'),
   performanceMode: document.querySelector('#performanceMode'),
+  recordingEngine: document.querySelector('#recordingEngine'),
   takeTitle: document.querySelector('#takeTitle'),
   titleDuration: document.querySelector('#titleDuration'),
   cueText: document.querySelector('#cueText'),
@@ -101,6 +102,9 @@ const state = {
   canvasStream: null,
   canvasVideoTrack: null,
   mediaRecorder: null,
+  recordingMimeType: null,
+  recordedVideoSize: null,
+  recordingSettings: null,
   chunks: [],
   drawing: false,
   recording: false,
@@ -168,17 +172,17 @@ const state = {
 
 const qualityProfiles = {
   balanced: {
-    bitsPerSecond: 6_000_000,
+    bitsPerSecond: 10_000_000,
     width: 1920,
     height: 1080
   },
   crisp: {
-    bitsPerSecond: 10_000_000,
+    bitsPerSecond: 18_000_000,
     width: 2560,
     height: 1440
   },
   cinematic: {
-    bitsPerSecond: 16_000_000,
+    bitsPerSecond: 32_000_000,
     width: 3840,
     height: 2160
   }
@@ -220,6 +224,7 @@ const persistedSettingKeys = [
   'fps',
   'smoothRecording',
   'performanceMode',
+  'recordingEngine',
   'takeTitle',
   'titleDuration',
   'cueText',
@@ -378,14 +383,15 @@ function renderDeviceSelect(select, devices, selectedValue, defaultLabel, fallba
 
 function canvasSizeForSettings(settings = getSettings()) {
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
+  const outputLayout = outputLayoutForRecording(settings);
   let size;
 
-  if (settings.outputLayout === 'vertical') {
+  if (outputLayout === 'vertical') {
     size = {
       width: profile.height,
       height: profile.width
     };
-  } else if (settings.outputLayout === 'square') {
+  } else if (outputLayout === 'square') {
     const squareSize = Math.min(profile.width, profile.height);
     return capCanvasSize({
       width: squareSize,
@@ -435,13 +441,33 @@ function lowLatencyMode(settings = getSettings()) {
   return settings.smoothRecording && settings.performanceMode === 'ultra';
 }
 
+function usesSmartCanvasRecording(settings = getSettings()) {
+  return settings.recordingEngine === 'smart';
+}
+
+function outputLayoutForRecording(settings = getSettings()) {
+  return usesSmartCanvasRecording(settings) ? settings.outputLayout : 'landscape';
+}
+
 function effectiveRecordingFps(settings = getSettings()) {
   const requestedFps = Number(settings.fps) || 30;
   return settings.smoothRecording ? Math.min(requestedFps, 30) : requestedFps;
 }
 
+function effectiveDrawFps(settings = getSettings()) {
+  if (!usesSmartCanvasRecording(settings) && settings.smoothRecording) {
+    return 15;
+  }
+
+  return effectiveRecordingFps(settings);
+}
+
 function recordingBitrate(settings = getSettings()) {
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
+  if (!usesSmartCanvasRecording(settings)) {
+    return profile.bitsPerSecond;
+  }
+
   return settings.smoothRecording
     ? Math.round(profile.bitsPerSecond * performanceProfile(settings).bitrateScale)
     : profile.bitsPerSecond;
@@ -526,6 +552,7 @@ function getSettings() {
     fps: Number(elements.fps.value),
     smoothRecording: elements.smoothRecording.checked,
     performanceMode: elements.performanceMode.value,
+    recordingEngine: elements.recordingEngine.value,
     takeTitle: cleanTitle(elements.takeTitle.value),
     titleDuration: Number(elements.titleDuration.value),
     cueText: cleanCueText(elements.cueText.value),
@@ -608,7 +635,14 @@ function renderHealth() {
     return;
   }
 
-  const targetFps = effectiveRecordingFps(getSettings());
+  const settings = state.recordingSettings || getSettings();
+  if (!usesSmartCanvasRecording(settings)) {
+    elements.healthText.textContent = 'Native';
+    elements.healthText.classList.add('good');
+    return;
+  }
+
+  const targetFps = effectiveRecordingFps(settings);
   const isHealthy = state.health.fps >= targetFps * 0.75 && state.health.droppedFrames === 0;
   elements.healthText.textContent = state.health.droppedFrames > 0
     ? `${state.health.fps} fps / ${state.health.droppedFrames} drops`
@@ -656,8 +690,18 @@ function syncControls() {
   elements.micMute.disabled = !elements.microphone.checked || !state.micStream;
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
+  const settings = getSettings();
+  if (!usesSmartCanvasRecording(settings) && settings.outputLayout !== 'landscape') {
+    elements.outputLayout.value = 'landscape';
+    settings.outputLayout = 'landscape';
+  }
+
+  elements.quality.disabled = state.recording;
+  elements.outputLayout.disabled = state.recording || !usesSmartCanvasRecording(settings);
+  elements.fps.disabled = state.recording;
+  elements.smoothRecording.disabled = state.recording;
+  elements.recordingEngine.disabled = state.recording;
   elements.micDevice.disabled = state.recording;
-  elements.performanceMode.disabled = !elements.smoothRecording.checked;
   elements.noiseGateThreshold.disabled = !elements.noiseGate.checked;
   elements.cameraDevice.disabled = state.recording;
   elements.refreshDevices.disabled = state.recording;
@@ -671,11 +715,16 @@ function syncControls() {
     input.disabled = !elements.smartMaster.checked;
   }
 
-  const settings = getSettings();
   const effectiveFps = effectiveRecordingFps(settings);
-  elements.fpsValue.textContent = effectiveFps === settings.fps
-    ? `${settings.fps} fps`
-    : `${settings.fps} fps (${effectiveFps} effective)`;
+  const previewFps = effectiveDrawFps(settings);
+  if (previewFps !== effectiveFps) {
+    elements.fpsValue.textContent = `${effectiveFps} fps (${previewFps} preview)`;
+  } else {
+    elements.fpsValue.textContent = effectiveFps === settings.fps
+      ? `${settings.fps} fps`
+      : `${settings.fps} fps (${effectiveFps} effective)`;
+  }
+  elements.performanceMode.disabled = state.recording || !settings.smoothRecording || !usesSmartCanvasRecording(settings);
   elements.micGainValue.textContent = `${Math.round(Number(elements.micGain.value) * 100)}%`;
   elements.noiseGateThresholdValue.textContent = `${Math.round(Number(elements.noiseGateThreshold.value) * 100)}%`;
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
@@ -1159,6 +1208,22 @@ function resizeCanvasForProfile(settings = getSettings()) {
   return changed;
 }
 
+function captureSizeForSettings(settings = getSettings()) {
+  if (usesSmartCanvasRecording(settings)) {
+    const renderSize = canvasSizeForSettings(settings);
+    return {
+      width: Math.max(640, renderSize.width),
+      height: Math.max(480, renderSize.height)
+    };
+  }
+
+  const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
+  return {
+    width: profile.width,
+    height: profile.height
+  };
+}
+
 function syncCanvasOutputSize() {
   if (state.recording) {
     return;
@@ -1220,12 +1285,37 @@ function createRecordingCanvasStream(settings) {
   }
 
   state.canvasVideoTrack = videoTrack || null;
+  tuneScreenVideoTrack(state.canvasVideoTrack);
+  return stream;
+}
+
+function createNativeRecordingStream() {
+  const stream = new MediaStream();
+  const [videoTrack] = state.captureStream ? state.captureStream.getVideoTracks() : [];
+  if (videoTrack) {
+    tuneScreenVideoTrack(videoTrack);
+    stream.addTrack(videoTrack);
+  }
+
+  state.canvasVideoTrack = null;
   return stream;
 }
 
 function requestRecordingFrame() {
   if (state.canvasVideoTrack && typeof state.canvasVideoTrack.requestFrame === 'function') {
     state.canvasVideoTrack.requestFrame();
+  }
+}
+
+function tuneScreenVideoTrack(track) {
+  if (!track) {
+    return;
+  }
+
+  try {
+    track.contentHint = 'detail';
+  } catch (error) {
+    console.warn('Could not apply screen content hint.', error);
   }
 }
 
@@ -1314,6 +1404,22 @@ function drawVideoFrame(settings) {
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
   }
+}
+
+function drawNativePreviewFrame(settings) {
+  const width = canvas.width;
+  const height = canvas.height;
+  const sourceWidth = video.videoWidth || width;
+  const sourceHeight = video.videoHeight || height;
+  const { drawWidth, drawHeight } = coverRect(sourceWidth, sourceHeight, width, height, 1);
+  const drawX = -Math.max(0, drawWidth - width) * 0.5;
+  const drawY = -Math.max(0, drawHeight - height) * 0.5;
+
+  ctx.fillStyle = '#07080a';
+  ctx.fillRect(0, 0, width, height);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = settings.smoothRecording ? 'low' : 'medium';
+  ctx.drawImage(video, drawX, drawY, drawWidth, drawHeight);
 }
 
 function privacyRect(settings) {
@@ -1803,8 +1909,10 @@ function drawLoop(timestamp = performance.now()) {
   }
 
   const settings = getSettings();
-  const effectiveFps = effectiveRecordingFps(settings);
-  const frameBudget = 1000 / effectiveFps;
+  const smartCanvasRecording = usesSmartCanvasRecording(settings);
+  const recordingFps = effectiveRecordingFps(settings);
+  const drawFps = effectiveDrawFps(settings);
+  const frameBudget = 1000 / drawFps;
 
   if (state.lastDrawAt > 0 && timestamp - state.lastDrawAt < frameBudget * 0.92) {
     requestAnimationFrame(drawLoop);
@@ -1812,21 +1920,31 @@ function drawLoop(timestamp = performance.now()) {
   }
 
   state.lastDrawAt = timestamp;
-  scanMotionTarget(settings, timestamp);
-  updateFrameHealth(timestamp, effectiveFps);
-  easeFrame(settings);
+
+  if (smartCanvasRecording) {
+    scanMotionTarget(settings, timestamp);
+    updateFrameHealth(timestamp, recordingFps);
+    easeFrame(settings);
+  } else {
+    renderHealth();
+  }
 
   if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-    drawVideoFrame(settings);
-    drawPrivacyBlur(settings);
-    drawCursorTrail(settings);
-    drawCursorSpotlight(settings);
-    drawPulse(settings);
-    drawMarkerOverlay(settings);
-    drawCameraBubble(settings);
-    drawKeyboardOverlay(settings);
-    drawTitleOverlay(settings);
-    drawCueOverlay(settings);
+    if (smartCanvasRecording) {
+      drawVideoFrame(settings);
+      drawPrivacyBlur(settings);
+      drawCursorTrail(settings);
+      drawCursorSpotlight(settings);
+      drawPulse(settings);
+      drawMarkerOverlay(settings);
+      drawCameraBubble(settings);
+      drawKeyboardOverlay(settings);
+      drawTitleOverlay(settings);
+      drawCueOverlay(settings);
+    } else {
+      drawNativePreviewFrame(settings);
+    }
+
     elements.emptyState.hidden = true;
     requestRecordingFrame();
   } else {
@@ -1838,9 +1956,9 @@ function drawLoop(timestamp = performance.now()) {
 }
 
 async function openCaptureStream(settings = getSettings()) {
-  const renderSize = canvasSizeForSettings(settings);
-  const captureWidth = Math.max(640, renderSize.width);
-  const captureHeight = Math.max(480, renderSize.height);
+  const captureSize = captureSizeForSettings(settings);
+  const captureWidth = Math.max(640, captureSize.width);
+  const captureHeight = Math.max(480, captureSize.height);
   const captureStream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
@@ -1856,6 +1974,7 @@ async function openCaptureStream(settings = getSettings()) {
     }
   });
 
+  tuneScreenVideoTrack(captureStream.getVideoTracks()[0]);
   video.srcObject = captureStream;
   await video.play();
   return captureStream;
@@ -1983,8 +2102,9 @@ function recorderMimeType() {
 function buildSuggestedName(settings = getSettings()) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const title = fileSafeTitle(settings.takeTitle);
-  const layout = settings.outputLayout && settings.outputLayout !== 'landscape'
-    ? `${settings.outputLayout}-`
+  const outputLayout = outputLayoutForRecording(settings);
+  const layout = outputLayout !== 'landscape'
+    ? `${outputLayout}-`
     : '';
   return `smartie-${title ? `${title}-` : ''}${layout}${stamp}.webm`;
 }
@@ -2008,7 +2128,7 @@ function canvasPngBytes() {
 }
 
 function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }) {
-  const outputSize = canvasSizeForSettings(settings);
+  const outputSize = state.recordedVideoSize || canvasSizeForSettings(settings);
 
   return {
     app: 'Smartie',
@@ -2055,12 +2175,14 @@ function buildRecordingMetadata({ suggestedName, durationMs, markers, settings }
     },
     capture: {
       quality: settings.quality,
-      outputLayout: settings.outputLayout,
+      outputLayout: outputLayoutForRecording(settings),
+      requestedOutputLayout: settings.outputLayout,
       outputWidth: outputSize.width,
       outputHeight: outputSize.height,
       fps: effectiveRecordingFps(settings),
       requestedFps: settings.fps,
       smoothRecording: settings.smoothRecording,
+      recordingEngine: settings.recordingEngine,
       performanceMode: settings.smoothRecording ? settings.performanceMode : 'quality',
       manualFramePump: Boolean(state.canvasVideoTrack && typeof state.canvasVideoTrack.requestFrame === 'function'),
       bitrate: recordingBitrate(settings),
@@ -2094,13 +2216,20 @@ async function startRecording() {
     setStatus('Preparing capture');
     resizeCanvasForProfile();
     const settings = getSettings();
+    state.recordingSettings = { ...settings };
     await runCountdown(settings.countdownSeconds);
     await hideWindowForRecording(settings);
 
     state.captureStream = await openCaptureStream(settings);
     state.micStream = await openMicrophoneStream(settings);
     state.cameraStream = await openCameraStream(settings);
-    state.canvasStream = createRecordingCanvasStream(settings);
+    state.canvasStream = usesSmartCanvasRecording(settings)
+      ? createRecordingCanvasStream(settings)
+      : createNativeRecordingStream();
+
+    if (state.canvasStream.getVideoTracks().length === 0) {
+      throw new Error('Could not attach a video track to the recorder.');
+    }
 
     if (state.micStream) {
       for (const track of state.micStream.getAudioTracks()) {
@@ -2108,17 +2237,29 @@ async function startRecording() {
       }
     }
 
+    const [recordedVideoTrack] = state.canvasStream.getVideoTracks();
+    const trackSettings = recordedVideoTrack ? recordedVideoTrack.getSettings() : {};
+    state.recordedVideoSize = {
+      width: trackSettings.width || canvas.width,
+      height: trackSettings.height || canvas.height
+    };
+
     const mimeType = recorderMimeType();
+    const recorderOptions = {
+      videoBitsPerSecond: recordingBitrate(settings)
+    };
+    if (mimeType) {
+      recorderOptions.mimeType = mimeType;
+    }
+
     state.chunks = [];
     state.markers = [];
     state.activeMarker = null;
     state.lastAutoMarkerAt = -Infinity;
     state.lastDrawAt = 0;
     state.discardRequested = false;
-    state.mediaRecorder = new MediaRecorder(state.canvasStream, {
-      mimeType,
-      videoBitsPerSecond: recordingBitrate(settings)
-    });
+    state.mediaRecorder = new MediaRecorder(state.canvasStream, recorderOptions);
+    state.recordingMimeType = state.mediaRecorder.mimeType || mimeType || 'video/webm';
 
     state.mediaRecorder.addEventListener('dataavailable', (event) => {
       if (event.data && event.data.size > 0) {
@@ -2142,7 +2283,13 @@ async function startRecording() {
     state.motionTarget.strength = 0;
     state.trail = [];
     startPointerPolling();
-    requestAnimationFrame(drawLoop);
+    if (usesSmartCanvasRecording(settings) || !settings.hideWhileRecording) {
+      requestAnimationFrame(drawLoop);
+    } else {
+      state.drawing = false;
+      elements.emptyState.hidden = true;
+      renderHealth();
+    }
 
     elements.recordingDot.classList.add('active');
     setStatus('Recording');
@@ -2169,6 +2316,7 @@ function togglePauseRecording() {
     state.paused = false;
     state.pausedAt = 0;
     state.health.lastFrameAt = 0;
+    renderHealth();
     setStatus('Recording');
   } else {
     if (state.mediaRecorder.state === 'recording') {
@@ -2331,6 +2479,9 @@ function cleanupRecording() {
   state.canvasStream = null;
   state.canvasVideoTrack = null;
   state.mediaRecorder = null;
+  state.recordingMimeType = null;
+  state.recordedVideoSize = null;
+  state.recordingSettings = null;
   video.srcObject = null;
   cameraVideo.srcObject = null;
   elements.recordingDot.classList.remove('active');
@@ -2352,10 +2503,10 @@ async function saveRecording() {
     return;
   }
 
-  const mimeType = recorderMimeType() || 'video/webm';
+  const mimeType = state.recordingMimeType || recorderMimeType() || 'video/webm';
   const blob = new Blob(state.chunks, { type: mimeType });
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  const settings = getSettings();
+  const settings = state.recordingSettings || getSettings();
   const durationMs = recordingElapsedMs();
   const markers = state.markers.slice();
   const suggestedName = buildSuggestedName(settings);
@@ -2487,6 +2638,7 @@ for (const input of [
   elements.fps,
   elements.smoothRecording,
   elements.performanceMode,
+  elements.recordingEngine,
   elements.takeTitle,
   elements.titleDuration,
   elements.cueText,

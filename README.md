@@ -1,15 +1,15 @@
 # Smartie
 
 Smartie is a Linux-compatible smart screen recorder for polished demo videos.
-It records a selected screen or window through Electron, renders the capture
-through a real-time canvas pipeline, and can add smooth smart zoom, cursor
-spotlight, motion emphasis, keyboard overlays, and recording polish with one
-master feature toggle.
+It records a selected screen or window through Electron with a native
+low-latency engine by default, and keeps a smart-effects canvas engine available
+when baked zoom, cursor polish, overlays, and framing effects are needed.
 
 ## Current Features
 
 - Screen and window source picker with live thumbnails.
-- Canvas-based recording pipeline for real-time effects.
+- Native smooth recording pipeline for direct desktop capture.
+- Optional canvas-based smart-effects pipeline for baked real-time effects.
 - Smooth smart zoom that follows the cursor and eases back out when idle.
 - Smart focus modes for cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Master Smart Features toggle plus individual toggles for:
@@ -43,8 +43,8 @@ master feature toggle.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
 - Global recorder shortcuts with Wayland portal support where available.
-- Low-latency smooth recording mode, render-load presets, quality presets, output layout control, frame-rate control, countdown,
-  elapsed timer, WebM export, and optional bundled-FFmpeg MP4 copy.
+- Low-latency native recording engine, smart-effects engine, render-load presets, quality presets,
+  frame-rate control, smart-effects layout control, countdown, elapsed timer, WebM export, and optional bundled-FFmpeg MP4 copy.
 - Linux desktop support through Electron desktop capture APIs.
 
 ## Requirements
@@ -101,6 +101,8 @@ npm run package:linux
 ## Notes
 
 Smartie always writes the primary recording as WebM and can also create a
-bundled-FFmpeg MP4 copy. The smart effects are rendered into the video itself,
-so the output file includes the zoom/framing/title decisions instead of only
-previewing them in the app.
+bundled-FFmpeg MP4 copy. Use the default Native smooth engine for the lightest,
+highest-quality capture path; it records the desktop stream directly and stores
+smart markers/settings in sidecar files. Use Smart effects when the zoom,
+framing, title, cue, camera, cursor, or privacy effects must be rendered into
+the video during recording.
