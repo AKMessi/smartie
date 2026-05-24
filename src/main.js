@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { promisify } = require('node:util');
 const ffmpegPath = require('ffmpeg-static');
+const { NativeTelemetryCore } = require('./native-telemetry');
 
 const APP_TITLE = 'Smartie';
 const IS_SMOKE_TEST = process.argv.includes('--smoke-test');
@@ -15,6 +16,10 @@ app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
 let mainWindow;
 let shortcutStatuses = [];
 const recordingSessions = new Map();
+const nativeTelemetry = new NativeTelemetryCore({
+  screen,
+  getDisplaySnapshot
+});
 
 const recorderShortcuts = [
   {
@@ -563,6 +568,7 @@ function normalizeProjectArtifacts(projectArtifacts) {
     keyboardTimeline: normalizeTimelineArtifact(payload.keyboardTimeline, 'smartie.keyboard_timeline.v1'),
     motionTimeline: normalizeTimelineArtifact(payload.motionTimeline, 'smartie.motion_timeline.v1'),
     accessibilityTimeline: normalizeTimelineArtifact(payload.accessibilityTimeline, 'smartie.accessibility_timeline.v1'),
+    nativeTelemetryTimeline: normalizeTimelineArtifact(payload.nativeTelemetryTimeline, 'smartie.native_telemetry_timeline.v1'),
     proxyTimeline: normalizeTimelineArtifact(payload.proxyTimeline, 'smartie.proxy_timeline.v1', 'proxies'),
     renderQa: payload.renderQa && typeof payload.renderQa === 'object'
       ? payload.renderQa
@@ -601,6 +607,7 @@ function buildSmartieProjectManifest(filePath, metadata, attentionTimeline, came
       keyboard_timeline: 'keyboard.timeline.json',
       motion_timeline: 'motion.timeline.json',
       accessibility_timeline: 'accessibility.timeline.json',
+      native_telemetry_timeline: 'native.timeline.json',
       proxy_timeline: 'proxy.timeline.json',
       camera_plan: 'camera.plan.json',
       render_qa: 'render.qa.json',
@@ -629,7 +636,9 @@ function buildSmartieProjectManifest(filePath, metadata, attentionTimeline, came
       click_events: timelineCount(projectArtifacts.clickTimeline),
       keyboard_events: timelineCount(projectArtifacts.keyboardTimeline),
       motion_events: timelineCount(projectArtifacts.motionTimeline),
-      accessibility_events: timelineCount(projectArtifacts.accessibilityTimeline)
+      accessibility_events: timelineCount(projectArtifacts.accessibilityTimeline),
+      native_events: timelineCount(projectArtifacts.nativeTelemetryTimeline),
+      native_quality: projectArtifacts.nativeTelemetryTimeline?.stats?.quality || null
     },
     proxy: {
       previews: timelineCount(projectArtifacts.proxyTimeline, 'proxies'),
@@ -746,6 +755,7 @@ async function writeSmartieProject(filePath, metadata, attentionTimeline, camera
   const keyboardTimelinePath = path.join(projectPath, 'keyboard.timeline.json');
   const motionTimelinePath = path.join(projectPath, 'motion.timeline.json');
   const accessibilityTimelinePath = path.join(projectPath, 'accessibility.timeline.json');
+  const nativeTelemetryTimelinePath = path.join(projectPath, 'native.timeline.json');
   const proxyTimelinePath = path.join(projectPath, 'proxy.timeline.json');
   const cameraPlanPath = path.join(projectPath, 'camera.plan.json');
   const renderQaPath = path.join(projectPath, 'render.qa.json');
@@ -769,6 +779,7 @@ async function writeSmartieProject(filePath, metadata, attentionTimeline, camera
   await writeJsonFile(keyboardTimelinePath, normalizedArtifacts.keyboardTimeline);
   await writeJsonFile(motionTimelinePath, normalizedArtifacts.motionTimeline);
   await writeJsonFile(accessibilityTimelinePath, normalizedArtifacts.accessibilityTimeline);
+  await writeJsonFile(nativeTelemetryTimelinePath, normalizedArtifacts.nativeTelemetryTimeline);
   await writeJsonFile(proxyTimelinePath, normalizedArtifacts.proxyTimeline);
   await writeJsonFile(cameraPlanPath, normalizedCameraPlan);
   await writeJsonFile(renderQaPath, normalizedArtifacts.renderQa);
@@ -783,6 +794,7 @@ async function writeSmartieProject(filePath, metadata, attentionTimeline, camera
     keyboardTimelinePath,
     motionTimelinePath,
     accessibilityTimelinePath,
+    nativeTelemetryTimelinePath,
     proxyTimelinePath,
     cameraPlanPath,
     renderQaPath,
@@ -1000,6 +1012,7 @@ async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'we
     keyboardTimelinePath: project ? project.keyboardTimelinePath : null,
     motionTimelinePath: project ? project.motionTimelinePath : null,
     accessibilityTimelinePath: project ? project.accessibilityTimelinePath : null,
+    nativeTelemetryTimelinePath: project ? project.nativeTelemetryTimelinePath : null,
     proxyTimelinePath: project ? project.proxyTimelinePath : null,
     cameraPlanPath: project ? project.cameraPlanPath : null,
     renderQaPath: project ? project.renderQaPath : null,
@@ -1033,12 +1046,26 @@ ipcMain.handle('smartie:list-sources', async () => {
   };
 });
 
-ipcMain.handle('smartie:get-pointer', () => ({
-  point: screen.getCursorScreenPoint(),
-  displays: getDisplaySnapshot()
-}));
+ipcMain.handle('smartie:get-pointer', async () => {
+  const pointer = await nativeTelemetry.pointerSnapshot({ allowNativePolling: false });
+  return {
+    point: pointer.point || screen.getCursorScreenPoint(),
+    provider: pointer.provider,
+    precision: pointer.precision,
+    native: pointer,
+    displays: getDisplaySnapshot()
+  };
+});
 
 ipcMain.handle('smartie:get-performance-profile', () => classifyPerformanceProfile());
+
+ipcMain.handle('smartie:start-native-telemetry', async (_event, payload) => nativeTelemetry.startSession(payload));
+
+ipcMain.handle('smartie:get-native-telemetry', async (_event, payload) => nativeTelemetry.snapshot(payload));
+
+ipcMain.handle('smartie:get-native-telemetry-diagnostics', async () => nativeTelemetry.diagnostics());
+
+ipcMain.handle('smartie:stop-native-telemetry', async () => nativeTelemetry.stopSession());
 
 ipcMain.handle('smartie:create-recording-session', async (_event, payload) => createRecordingSession(payload));
 
@@ -1108,6 +1135,7 @@ async function getActiveWindowSnapshot() {
 
 ipcMain.handle('smartie:get-semantic-context', async () => ({
   activeWindow: await getActiveWindowSnapshot(),
+  nativeTelemetry: await nativeTelemetry.snapshot({ allowNativePolling: true }),
   displays: getDisplaySnapshot()
 }));
 
@@ -1271,6 +1299,7 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
+  nativeTelemetry.stopSession();
   globalShortcut.unregisterAll();
 });
 

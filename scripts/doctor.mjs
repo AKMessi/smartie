@@ -66,16 +66,59 @@ function checkSandbox() {
 
 function checkDesktopSession() {
   const session = process.env.XDG_SESSION_TYPE || 'unknown';
+  const desktop = process.env.XDG_CURRENT_DESKTOP || process.env.DESKTOP_SESSION || 'unknown';
   const portal = serviceState('xdg-desktop-portal.service');
   const pipewire = serviceState('pipewire.service');
 
   add(session === 'wayland' || session === 'x11' ? 'PASS' : 'WARN', 'Desktop session', session);
+  add('PASS', 'Desktop environment', desktop);
 
   if (session === 'wayland') {
     add(portal === 'active' ? 'PASS' : 'WARN', 'xdg-desktop-portal', portal || 'not detected; Wayland capture may require the portal service');
     add(pipewire === 'active' ? 'PASS' : 'WARN', 'PipeWire', pipewire || 'not detected; Wayland capture may require PipeWire');
   } else {
     add('PASS', 'Portal check', 'not required for X11 sessions');
+  }
+}
+
+function checkNativeTelemetry() {
+  const session = process.env.XDG_SESSION_TYPE || 'unknown';
+  const desktop = `${process.env.XDG_CURRENT_DESKTOP || ''}:${process.env.DESKTOP_SESSION || ''}`.toLowerCase();
+  const helperPath = process.env.SMARTIE_TELEMETRY_HELPER || '';
+  const hasHelper = helperPath && existsSync(helperPath);
+  const hasGdbus = commandExists('gdbus');
+  const hasXdotool = commandExists('xdotool');
+  const hasQdbus = commandExists('qdbus6') || commandExists('qdbus');
+  const hasGnomeExtensions = commandExists('gnome-extensions');
+
+  add(hasHelper ? 'PASS' : 'WARN', 'Native telemetry helper', hasHelper ? helperPath : 'SMARTIE_TELEMETRY_HELPER not set; compositor socket adapters can still connect while recording');
+
+  if (session === 'x11') {
+    add(hasXdotool ? 'PASS' : 'WARN', 'X11 telemetry provider', hasXdotool ? 'xdotool available' : 'install xdotool for active-window telemetry');
+  }
+
+  if (session === 'wayland' && desktop.includes('kde')) {
+    add(hasQdbus ? 'PASS' : 'WARN', 'KWin telemetry adapter path', hasQdbus ? 'qdbus available for KWin adapter diagnostics' : 'qdbus/qdbus6 unavailable');
+  }
+
+  if (session === 'wayland' && desktop.includes('gnome')) {
+    add(hasGnomeExtensions ? 'PASS' : 'WARN', 'GNOME telemetry adapter path', hasGnomeExtensions ? 'gnome-extensions available' : 'gnome-extensions unavailable');
+  }
+
+  if (process.platform === 'linux' && hasGdbus) {
+    const atSpi = run('gdbus', [
+      'call',
+      '--session',
+      '--dest',
+      'org.a11y.Bus',
+      '--object-path',
+      '/org/a11y/bus',
+      '--method',
+      'org.a11y.Bus.GetAddress'
+    ]);
+    add(atSpi ? 'PASS' : 'WARN', 'AT-SPI semantic telemetry', atSpi ? 'accessibility bus available' : 'accessibility bus unavailable');
+  } else if (process.platform === 'linux') {
+    add('WARN', 'AT-SPI semantic telemetry', 'gdbus unavailable');
   }
 }
 
@@ -100,6 +143,7 @@ checkPlatform();
 checkElectronInstall();
 checkSandbox();
 checkDesktopSession();
+checkNativeTelemetry();
 checkPackageTool();
 checkBundledFfmpeg();
 

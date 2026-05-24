@@ -15,11 +15,12 @@ saved video after recording.
 - Adaptive performance governor with Auto, Potato saver, Ultra smooth, Balanced, and Max quality profiles.
 - Disk-backed recording sessions that stream MediaRecorder chunks to the main process instead of holding the whole take in renderer memory.
 - Smart Director v2 auto zoom with telemetry capture, cue scoring, offline camera-plan compilation, render QA, and smooth keyframed playback.
+- Native telemetry core with Wayland-aware quality grading, a compositor-adapter socket, optional stdio helper support, and per-take native telemetry artifacts.
 - Director failsafe planning for Wayland/window-source recordings where cursor telemetry is unavailable or stuck.
 - Smart focus modes for Smart Director, cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Director style presets for subtle, balanced, or cinematic camera plans.
 - Editable Director Plan controls for hiding shots, adjusting zoom intensity, and changing shot duration after a take.
-- Separate telemetry timelines for cursor, click, keyboard, motion, accessibility context, proxy preview metadata, and render QA.
+- Separate telemetry timelines for cursor, click, keyboard, motion, accessibility context, native/compositor diagnostics, proxy preview metadata, and render QA.
 - Vector cursor/highlight rendering that follows the compiled camera transform instead of being tied to raw captured pixels.
 - Master Smart Features toggle plus individual toggles for:
   - Auto zoom
@@ -100,6 +101,8 @@ the OS already owns it.
 npm run check
 npm run smoke
 npm run doctor
+npm run eval:telemetry -- /path/to/take.smartie-project
+npm run eval:director -- /path/to/take.smartie-project
 ```
 
 ## Smartie Project
@@ -119,6 +122,7 @@ smartie-my-take.smartie-project/
   keyboard.timeline.json
   motion.timeline.json
   accessibility.timeline.json
+  native.timeline.json
   proxy.timeline.json
   camera.plan.json
   render.qa.json
@@ -128,9 +132,10 @@ smartie-my-take.smartie-project/
 
 The attention timeline stores high-level cues. The separate telemetry timelines
 store source cursor, click, keyboard, motion, semantic/accessibility context,
-proxy preview metadata, and render QA. The camera plan stores compiled smart
-zoom shots, keyframes, QA warnings, and editable segment metadata so Smartie can
-edit the director plan without changing the capture format.
+native/compositor telemetry, proxy preview metadata, and render QA. The camera
+plan stores compiled smart zoom shots, keyframes, QA warnings, and editable
+segment metadata so Smartie can edit the director plan without changing the
+capture format.
 
 ## Performance Architecture
 
@@ -147,15 +152,21 @@ polish, overlays, and camera-plan rendering happen after stop, so weaker systems
 do not pay that cost while recording. Live smart effects remain available, but
 Auto and Potato saver move live canvas recording to hybrid when needed.
 
-Smartie also evaluates telemetry quality before compiling the camera plan. If
-Wayland or a window-source capture reports unusable all-zero cursor data, the
-Director now falls back to visual motion telemetry and then conservative
+Smartie also evaluates telemetry quality before compiling the camera plan. Each
+recording starts a native telemetry session and writes `native.timeline.json`
+with the active telemetry tier: `precision`, `native-pointer`, `portal-ready`,
+`x11-native`, or `electron-fallback`. If Wayland or a window-source capture
+reports unusable all-zero cursor data, the Director falls back to native pointer
+snapshots when available, then visual motion telemetry, and finally conservative
 failsafe focus shots instead of rendering a long wide-only take.
 
-On Linux/X11, semantic context can include the active window title through
-`xdotool` when available. On Wayland, Smartie records the limitation in
-`accessibility.timeline.json` until a native portal/accessibility helper is
-added.
+On Linux/X11, semantic context can include active window and pointer telemetry
+through `xdotool` when available. On Wayland, Smartie opens
+`$XDG_RUNTIME_DIR/smartie-telemetry.sock` during recording so trusted compositor
+adapters can stream cursor, focus, and window geometry without loading the
+capture loop. The bundled GNOME Shell adapter prototype lives under
+`native/linux/gnome-shell/smartie-telemetry@akmessi`, and production native
+helpers can be attached with `SMARTIE_TELEMETRY_HELPER=/path/to/helper`.
 
 ## Package
 

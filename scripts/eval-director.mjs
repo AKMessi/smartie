@@ -145,6 +145,29 @@ function buildFallbackEvents({ settings, durationMs, output, telemetry }) {
     });
   }
 
+  for (const nativeEvent of spacedTelemetryEvents(
+    (telemetry.native || [])
+      .filter((event) => (event.type === 'snapshot' || event.type === 'pointer' || event.type === 'cursor') && event.pointer && Number.isFinite(finiteNumber(event.pointer.x, NaN)))
+      .filter((event) => finiteNumber(event.quality?.score, 0) >= 0.72),
+    1250,
+    (event) => finiteNumber(event.quality?.score, 0)
+  ).slice(0, Math.max(4, Math.round(durationMs / 11000)))) {
+    const atMs = finiteNumber(nativeEvent.time_ms, finiteNumber(nativeEvent.time, 0) * 1000);
+    const confidence = clamp01(0.74 + finiteNumber(nativeEvent.quality?.score, 0.72) * 0.18);
+    push({
+      time_ms: Math.round(atMs),
+      x: roundTo(clamp01(finiteNumber(nativeEvent.pointer.x, 0.5)), 5),
+      y: roundTo(clamp01(finiteNumber(nativeEvent.pointer.y, 0.5)), 5),
+      type: 'attention',
+      confidence,
+      duration_ms: 980,
+      scale: fallbackAttentionScale(settings, confidence),
+      source: 'native_pointer_telemetry',
+      output_width: output.width,
+      output_height: output.height
+    });
+  }
+
   if (stats.cursor.usable) {
     for (const cursor of spacedTelemetryEvents(
       (telemetry.cursor || []).filter((sample) => finiteNumber(sample.velocity, 0) >= 0.003),
@@ -200,7 +223,9 @@ function buildFallbackEvents({ settings, durationMs, output, telemetry }) {
     }
   }
 
-  if (stats.sources.visual_motion_fallback) {
+  if (stats.sources.native_pointer_telemetry) {
+    stats.strategy = 'native-pointer';
+  } else if (stats.sources.visual_motion_fallback) {
     stats.strategy = 'visual-motion';
   } else if (stats.sources.cursor_telemetry) {
     stats.strategy = 'cursor-telemetry';
@@ -315,6 +340,7 @@ const camera = readJson(join(projectPath, 'camera.plan.json'));
 const cursor = readJson(join(projectPath, 'cursor.timeline.json'));
 const motion = readJson(join(projectPath, 'motion.timeline.json'));
 const click = existsSync(join(projectPath, 'click.timeline.json')) ? readJson(join(projectPath, 'click.timeline.json')) : { events: [] };
+const native = existsSync(join(projectPath, 'native.timeline.json')) ? readJson(join(projectPath, 'native.timeline.json')) : { events: [], stats: {} };
 const settings = {
   smartMaster: manifest.smartie?.smart_stack?.enabled !== false,
   autoZoom: manifest.smartie?.smart_stack?.autoZoom !== false,
@@ -330,7 +356,8 @@ const output = {
 const telemetry = {
   cursor: cursor.samples || [],
   motion: motion.events || [],
-  clicks: click.events || []
+  clicks: click.events || [],
+  native: native.events || []
 };
 const originalSegments = Array.isArray(camera.segments) ? camera.segments.length : 0;
 const primaryEvents = Array.isArray(attention.events) ? attention.events.length : 0;
@@ -352,6 +379,8 @@ const report = {
     cursorSamples: telemetry.cursor.length,
     motionEvents: telemetry.motion.length,
     clickEvents: telemetry.clicks.length,
+    nativeEvents: telemetry.native.length,
+    nativeQuality: native.stats?.quality || null,
     cursorQuality: fallback.stats.cursor
   },
   projected: {

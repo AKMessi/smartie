@@ -1,0 +1,7 @@
+{
+  "uuid": "smartie-telemetry@akmessi",
+  "name": "Smartie Telemetry",
+  "description": "Streams compositor-owned pointer and focused-window telemetry to Smartie while recording.",
+  "shell-version": ["45", "46", "47", "48", "49"],
+  "version": 1
+}

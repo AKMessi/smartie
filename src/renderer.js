@@ -138,9 +138,12 @@ const state = {
     keyboard: [],
     motion: [],
     accessibility: [],
+    native: [],
     lastCursorSampleAt: -Infinity,
     lastMotionSampleAt: -Infinity,
-    lastAccessibilityTitle: ''
+    lastAccessibilityTitle: '',
+    nativeQuality: null,
+    nativeSession: null
   },
   renderContext: null,
   trail: [],
@@ -263,6 +266,7 @@ const performanceProfiles = {
     maxKeyboardEvents: 1200,
     maxMotionEvents: 900,
     maxAccessibilityEvents: 240,
+    maxNativeEvents: 800,
     forceHybridFromLive: true,
     downgradeQuality: 'balanced',
     cameraWidth: 640,
@@ -291,6 +295,7 @@ const performanceProfiles = {
     maxKeyboardEvents: 1800,
     maxMotionEvents: 1400,
     maxAccessibilityEvents: 420,
+    maxNativeEvents: 1400,
     forceHybridFromLive: true,
     downgradeQuality: null,
     cameraWidth: 854,
@@ -319,6 +324,7 @@ const performanceProfiles = {
     maxKeyboardEvents: 2600,
     maxMotionEvents: 2200,
     maxAccessibilityEvents: 720,
+    maxNativeEvents: 2400,
     forceHybridFromLive: false,
     downgradeQuality: null,
     cameraWidth: 960,
@@ -347,6 +353,7 @@ const performanceProfiles = {
     maxKeyboardEvents: 4200,
     maxMotionEvents: 4200,
     maxAccessibilityEvents: 1200,
+    maxNativeEvents: 4200,
     forceHybridFromLive: false,
     downgradeQuality: null,
     cameraWidth: 1280,
@@ -945,9 +952,12 @@ function resetTelemetry() {
     keyboard: [],
     motion: [],
     accessibility: [],
+    native: [],
     lastCursorSampleAt: -Infinity,
     lastMotionSampleAt: -Infinity,
-    lastAccessibilityTitle: ''
+    lastAccessibilityTitle: '',
+    nativeQuality: null,
+    nativeSession: null
   };
 }
 
@@ -976,9 +986,47 @@ function buildTimelineArtifact(schema, events, source, key = 'events') {
   };
 }
 
+function nativeTelemetryStats(events) {
+  const snapshots = Array.isArray(events) ? events.filter((event) => event.type === 'snapshot') : [];
+  const qualityCounts = {};
+  const providers = {};
+  let bestScore = 0;
+  let bestQuality = null;
+
+  for (const event of snapshots) {
+    const quality = event.quality || {};
+    const tier = quality.tier || 'unknown';
+    qualityCounts[tier] = (qualityCounts[tier] || 0) + 1;
+    bestScore = Math.max(bestScore, finiteNumber(quality.score, 0));
+    if (!bestQuality || finiteNumber(quality.score, 0) >= finiteNumber(bestQuality.score, 0)) {
+      bestQuality = quality;
+    }
+    const provider = event.provider || event.pointer?.provider || event.active_window?.provider || null;
+    if (provider) {
+      providers[provider] = (providers[provider] || 0) + 1;
+    }
+  }
+
+  return {
+    count: Array.isArray(events) ? events.length : 0,
+    snapshots: snapshots.length,
+    helperEvents: Array.isArray(events) ? events.filter((event) => event.helper_event).length : 0,
+    quality: bestQuality || state.telemetry.nativeQuality || {
+      tier: 'unavailable',
+      score: 0,
+      native: false,
+      perfectCandidate: false
+    },
+    bestScore: roundTo(bestScore, 3),
+    qualityCounts,
+    providers
+  };
+}
+
 function buildProjectArtifacts({ durationMs, outputSize, settings, cameraPlan, attentionTimeline, renderQa }) {
   const source = telemetrySource(durationMs, outputSize, settings);
   const proxyScale = Math.min(1, 640 / Math.max(outputSize.width, outputSize.height));
+  const nativeEvents = state.telemetry.native.slice();
 
   return {
     cursorTimeline: buildTimelineArtifact('smartie.cursor_timeline.v1', state.telemetry.cursor.slice(), source, 'samples'),
@@ -986,6 +1034,17 @@ function buildProjectArtifacts({ durationMs, outputSize, settings, cameraPlan, a
     keyboardTimeline: buildTimelineArtifact('smartie.keyboard_timeline.v1', state.telemetry.keyboard.slice(), source),
     motionTimeline: buildTimelineArtifact('smartie.motion_timeline.v1', state.telemetry.motion.slice(), source),
     accessibilityTimeline: buildTimelineArtifact('smartie.accessibility_timeline.v1', state.telemetry.accessibility.slice(), source),
+    nativeTelemetryTimeline: {
+      schema: 'smartie.native_telemetry_timeline.v1',
+      version: 1,
+      generated_at: new Date().toISOString(),
+      source: {
+        ...source,
+        session: state.telemetry.nativeSession || null
+      },
+      stats: nativeTelemetryStats(nativeEvents),
+      events: nativeEvents
+    },
     proxyTimeline: {
       schema: 'smartie.proxy_timeline.v1',
       version: 1,
@@ -1649,7 +1708,10 @@ function recordCursorTelemetry(x, y, velocity, atMs, pointerPayload) {
     y: roundTo(y, 5),
     screen_x: Math.round(pointerPayload.point.x),
     screen_y: Math.round(pointerPayload.point.y),
-    velocity: roundTo(velocity, 5)
+    velocity: roundTo(velocity, 5),
+    provider: pointerPayload.provider || pointerPayload.native?.provider || 'electron-screen',
+    precision: pointerPayload.precision || pointerPayload.native?.precision || null,
+    native_quality: state.telemetry.nativeQuality?.tier || null
   }, profile.maxCursorSamples);
 }
 
@@ -1689,6 +1751,127 @@ function recordMotionTelemetry() {
     y: roundTo(clamp01(state.motionTarget.y), 5),
     strength: roundTo(clamp01(state.motionTarget.strength), 3)
   }, profile.maxMotionEvents);
+}
+
+function nativeTelemetryQualityFromSnapshot(snapshot) {
+  const quality = snapshot && typeof snapshot.quality === 'object' ? snapshot.quality : {};
+  return {
+    tier: quality.tier || 'unavailable',
+    score: roundTo(clamp01(finiteNumber(quality.score, 0)), 3),
+    native: Boolean(quality.native),
+    perfectCandidate: Boolean(quality.perfectCandidate),
+    reason: quality.reason || null
+  };
+}
+
+function nativeTelemetryPointerPayload(snapshot) {
+  const pointer = snapshot?.pointer || {};
+  const point = pointer.point || {};
+  const x = finiteNumber(point.x, null);
+  const y = finiteNumber(point.y, null);
+  if (x === null || y === null) {
+    return null;
+  }
+
+  const payload = {
+    provider: pointer.provider || null,
+    precision: pointer.precision || null,
+    screen_x: Math.round(x),
+    screen_y: Math.round(y)
+  };
+  const display = selectedDisplay();
+  if (display?.bounds?.width > 0 && display?.bounds?.height > 0) {
+    payload.x = roundTo(clamp01((x - display.bounds.x) / display.bounds.width), 5);
+    payload.y = roundTo(clamp01((y - display.bounds.y) / display.bounds.height), 5);
+  }
+
+  return payload;
+}
+
+function nativeTelemetryWindowPayload(snapshot) {
+  const activeWindow = snapshot?.activeWindow || {};
+  if (!activeWindow || activeWindow.available === false) {
+    return {
+      available: false,
+      provider: activeWindow.provider || null,
+      error: activeWindow.error || null
+    };
+  }
+
+  return {
+    available: true,
+    provider: activeWindow.provider || null,
+    title: activeWindow.title || null,
+    pid: activeWindow.pid || null,
+    app_id: activeWindow.app_id || null,
+    role: activeWindow.role || null,
+    label: activeWindow.label || null,
+    bounds: activeWindow.bounds || null
+  };
+}
+
+function recordNativeTelemetrySnapshot(snapshot) {
+  if (!state.recording || state.paused || !snapshot) {
+    return;
+  }
+
+  const atMs = recordingElapsedMs();
+  const settings = state.recordingSettings || getSettings();
+  const profile = performanceProfile(settings);
+  const quality = nativeTelemetryQualityFromSnapshot(snapshot);
+  state.telemetry.nativeQuality = quality;
+
+  const baseEvent = {
+    time: roundTo(atMs / 1000, 3),
+    time_ms: Math.round(atMs),
+    captured_at: snapshot.captured_at || new Date().toISOString(),
+    type: 'snapshot',
+    provider: snapshot.pointer?.provider || snapshot.activeWindow?.provider || quality.tier,
+    quality,
+    session_type: snapshot.session_type || null,
+    desktop: snapshot.desktop || null,
+    pointer: nativeTelemetryPointerPayload(snapshot),
+    active_window: nativeTelemetryWindowPayload(snapshot),
+    adapters: Array.isArray(snapshot.adapters)
+      ? snapshot.adapters
+          .filter((adapter) => adapter.active || adapter.available)
+          .map((adapter) => ({
+            id: adapter.id,
+            active: Boolean(adapter.active),
+            available: Boolean(adapter.available),
+            reason: adapter.reason || null
+          }))
+      : []
+  };
+
+  boundedPush(state.telemetry.native, baseEvent, profile.maxNativeEvents);
+
+  const helperEvents = Array.isArray(snapshot.events) ? snapshot.events : [];
+  for (const event of helperEvents.slice(0, 80)) {
+    const enriched = {
+      ...event,
+      time: roundTo(atMs / 1000, 3),
+      time_ms: Math.round(atMs),
+      quality,
+      helper_event: true
+    };
+    if ((event.type === 'pointer' || event.type === 'cursor') && Number.isFinite(finiteNumber(event.screen_x, NaN)) && Number.isFinite(finiteNumber(event.screen_y, NaN))) {
+      const display = selectedDisplay();
+      enriched.pointer = {
+        provider: event.provider || 'native-helper',
+        precision: event.precision || 'compositor-global',
+        screen_x: Math.round(finiteNumber(event.screen_x, 0)),
+        screen_y: Math.round(finiteNumber(event.screen_y, 0))
+      };
+      if (display?.bounds?.width > 0 && display?.bounds?.height > 0) {
+        enriched.pointer.x = roundTo(clamp01((enriched.pointer.screen_x - display.bounds.x) / display.bounds.width), 5);
+        enriched.pointer.y = roundTo(clamp01((enriched.pointer.screen_y - display.bounds.y) / display.bounds.height), 5);
+      }
+    }
+    boundedPush(state.telemetry.native, {
+      ...enriched
+    }, profile.maxNativeEvents);
+  }
 }
 
 function shouldCollectVisualAttention(settings) {
@@ -1837,6 +2020,48 @@ function stopPointerPolling() {
   }
 }
 
+async function startNativeTelemetrySession(settings) {
+  if (typeof window.smartie.startNativeTelemetry !== 'function') {
+    return;
+  }
+
+  try {
+    const session = await window.smartie.startNativeTelemetry({
+      source: state.selectedSource
+        ? {
+            id: state.selectedSource.id,
+            name: state.selectedSource.name,
+            displayId: state.selectedSource.displayId
+          }
+        : null,
+      settings: {
+        focusMode: settings.focusMode,
+        recordingEngine: settings.recordingEngine,
+        outputLayout: outputLayoutForRecording(settings)
+      },
+      capabilities: ['pointer', 'window', 'accessibility', 'keyboard', 'clicks', 'cursor-metadata']
+    });
+    state.telemetry.nativeSession = session;
+  } catch (error) {
+    console.warn('Could not start Smartie native telemetry session.', error);
+    state.telemetry.nativeSession = {
+      error: error.message || 'native telemetry unavailable'
+    };
+  }
+}
+
+async function stopNativeTelemetrySession() {
+  if (typeof window.smartie.stopNativeTelemetry !== 'function') {
+    return;
+  }
+
+  try {
+    await window.smartie.stopNativeTelemetry();
+  } catch (error) {
+    console.warn('Could not stop Smartie native telemetry session.', error);
+  }
+}
+
 function startSemanticPolling() {
   stopSemanticPolling();
   const settings = state.recordingSettings || getSettings();
@@ -1848,7 +2073,11 @@ function startSemanticPolling() {
 
     try {
       const payload = await window.smartie.getSemanticContext();
-      const activeWindow = payload.activeWindow || {};
+      if (payload.nativeTelemetry) {
+        recordNativeTelemetrySnapshot(payload.nativeTelemetry);
+      }
+      const nativeWindow = payload.nativeTelemetry?.activeWindow || {};
+      const activeWindow = nativeWindow.available ? nativeWindow : (payload.activeWindow || {});
       const title = activeWindow.title || '';
       const shouldRecord = title !== state.telemetry.lastAccessibilityTitle || state.telemetry.accessibility.length === 0;
       if (!activeWindow.available && state.telemetry.accessibility.length > 0) {
@@ -1867,8 +2096,13 @@ function startSemanticPolling() {
         available: Boolean(activeWindow.available),
         title,
         pid: activeWindow.pid || null,
+        app_id: activeWindow.app_id || null,
+        role: activeWindow.role || null,
+        label: activeWindow.label || null,
+        bounds: activeWindow.bounds || null,
         session_type: activeWindow.sessionType || null,
         error: activeWindow.error || null,
+        native_quality: state.telemetry.nativeQuality,
         selected_source: state.selectedSource
           ? {
               id: state.selectedSource.id,
@@ -3389,6 +3623,33 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
     }, stats);
   }
 
+  const nativePrecisionEvents = spacedTelemetryEvents(
+    (Array.isArray(telemetry.native) ? telemetry.native : [])
+      .filter((event) => (event.type === 'snapshot' || event.type === 'pointer' || event.type === 'cursor') && event.pointer && Number.isFinite(finiteNumber(event.pointer.x, NaN)))
+      .filter((event) => finiteNumber(event.quality?.score, 0) >= 0.72),
+    1250,
+    (event) => finiteNumber(event.quality?.score, 0)
+  ).slice(0, Math.max(4, Math.round(durationMs / 11000)));
+
+  for (const nativeEvent of nativePrecisionEvents) {
+    const atMs = finiteNumber(nativeEvent.time_ms, finiteNumber(nativeEvent.time, 0) * 1000);
+    const confidence = clamp01(0.74 + finiteNumber(nativeEvent.quality?.score, 0.72) * 0.18);
+    pushFallbackAttentionEvent(events, {
+      time: roundTo(atMs / 1000, 3),
+      time_ms: Math.round(atMs),
+      x: roundTo(clamp01(finiteNumber(nativeEvent.pointer.x, 0.5)), 5),
+      y: roundTo(clamp01(finiteNumber(nativeEvent.pointer.y, 0.5)), 5),
+      type: 'attention',
+      confidence,
+      duration_ms: 980,
+      scale: fallbackAttentionScale(settings, confidence),
+      reason: `native ${nativeEvent.quality?.tier || 'telemetry'} pointer`,
+      source: 'native_pointer_telemetry',
+      output_width: outputSize.width,
+      output_height: outputSize.height
+    }, stats);
+  }
+
   const motionEvents = spacedTelemetryEvents(Array.isArray(telemetry.motion) ? telemetry.motion : [], 1100, (event) => finiteNumber(event.strength, 0))
     .slice(0, Math.max(4, Math.round(durationMs / 12000)));
   for (const motion of motionEvents) {
@@ -3476,6 +3737,8 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
 
   if (stats.sources.click_telemetry) {
     stats.strategy = 'click-telemetry';
+  } else if (stats.sources.native_pointer_telemetry) {
+    stats.strategy = 'native-pointer';
   } else if (stats.sources.visual_motion_fallback) {
     stats.strategy = 'visual-motion';
   } else if (stats.sources.cursor_telemetry) {
@@ -3933,6 +4196,8 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
   const fallbackStats = attentionTimeline.stats || {};
   const fallbackEvents = finiteNumber(fallbackStats.fallback_events, 0);
   const cursorQuality = fallbackStats.cursor_quality || {};
+  const nativeStats = nativeTelemetryStats(state.telemetry.native);
+  const nativeQuality = nativeStats.quality || {};
 
   if (attentionEvents >= 3 && segmentCount === 0 && timelinePlan.settings.autoZoom) {
     warnings.push('Attention telemetry exists but no zoom segments were selected.');
@@ -3958,6 +4223,9 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
   if (cursorQuality.usable === false && cursorQuality.samples > 0) {
     warnings.push(`Cursor telemetry was ${cursorQuality.reason}; Smartie used fallback attention.`);
   }
+  if (timelinePlan.settings.autoZoom && nativeQuality.tier && nativeQuality.tier !== 'precision') {
+    warnings.push(`Native telemetry quality is ${nativeQuality.tier}; compositor precision adapter is not fully active.`);
+  }
 
   return {
     schema: 'smartie.render_qa.v1',
@@ -3980,6 +4248,8 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
       fallbackAttentionEvents: fallbackEvents,
       fallbackStrategy: fallbackStats.fallback_strategy || 'none',
       cursorTelemetryQuality: cursorQuality,
+      nativeTelemetryQuality: nativeQuality,
+      nativeTelemetryStats: nativeStats,
       cameraSegments: segmentCount,
       keyframes: cameraPlan.keyframes.length,
       zoomCoverage,
@@ -3990,7 +4260,8 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
         clickEvents: state.telemetry.clicks.length,
         keyboardEvents: state.telemetry.keyboard.length,
         motionEvents: state.telemetry.motion.length,
-        accessibilityEvents: state.telemetry.accessibility.length
+        accessibilityEvents: state.telemetry.accessibility.length,
+        nativeEvents: state.telemetry.native.length
       }
     }
   };
@@ -4639,6 +4910,10 @@ function buildRecordingMetadata({
       performanceResolvedMode: settings.performanceResolvedMode || activePerformanceMode(settings),
       performanceTier: settings.performanceTier || state.performance.systemProfile?.tier || null,
       performanceGovernor: settings.performanceGovernor || null,
+      nativeTelemetry: {
+        session: state.telemetry.nativeSession?.id || null,
+        quality: state.telemetry.nativeQuality || null
+      },
       requestedQuality: settings.requestedQuality || settings.quality,
       manualFramePump: Boolean(state.canvasVideoTrack && typeof state.canvasVideoTrack.requestFrame === 'function'),
       bitrate: recordingBitrate(settings),
@@ -4725,6 +5000,7 @@ async function startRecording() {
     state.smartTrail = [];
     state.smartPulses = [];
     resetTelemetry();
+    await startNativeTelemetrySession(settings);
     state.mediaRecorder = new MediaRecorder(state.canvasStream, recorderOptions);
     state.recordingMimeType = state.mediaRecorder.mimeType || mimeType || 'video/webm';
 
@@ -4951,6 +5227,7 @@ function cleanupRecording({ keepSession = false } = {}) {
   state.lastDrawAt = 0;
   stopPointerPolling();
   stopSemanticPolling();
+  stopNativeTelemetrySession();
   stopSmartTimeline();
   stopMicMeter();
   window.clearInterval(state.timerId);
@@ -5053,7 +5330,8 @@ async function saveRecording() {
       clicks: state.telemetry.clicks.slice(),
       keyboard: state.telemetry.keyboard.slice(),
       motion: state.telemetry.motion.slice(),
-      accessibility: state.telemetry.accessibility.slice()
+      accessibility: state.telemetry.accessibility.slice(),
+      native: state.telemetry.native.slice()
     }
   };
   const shouldPostRender = usesHybridSmartRender(settings)
@@ -5110,7 +5388,9 @@ async function saveRecording() {
     clickEvents: projectArtifacts.clickTimeline.events.length,
     keyboardEvents: projectArtifacts.keyboardTimeline.events.length,
     motionEvents: projectArtifacts.motionTimeline.events.length,
-    accessibilityEvents: projectArtifacts.accessibilityTimeline.events.length
+    accessibilityEvents: projectArtifacts.accessibilityTimeline.events.length,
+    nativeEvents: projectArtifacts.nativeTelemetryTimeline.events.length,
+    nativeQuality: projectArtifacts.nativeTelemetryTimeline.stats.quality
   };
 
   cleanupRecording({ keepSession: Boolean(sessionId) });
