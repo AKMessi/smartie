@@ -1206,7 +1206,7 @@ function syncControls() {
   elements.micMute.disabled = !elements.microphone.checked || !state.micStream;
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
-  const settings = getSettings();
+  const settings = state.recordingSettings || getSettings();
   if (!usesSmartEffectsOutput(settings) && settings.outputLayout !== 'landscape') {
     elements.outputLayout.value = 'landscape';
     settings.outputLayout = 'landscape';
@@ -1691,6 +1691,14 @@ function recordMotionTelemetry() {
   }, profile.maxMotionEvents);
 }
 
+function shouldCollectVisualAttention(settings) {
+  return state.recording
+    && usesHybridSmartRender(settings)
+    && settings.smartMaster
+    && settings.autoZoom
+    && (settings.focusMode === 'director' || settings.focusMode === 'motion');
+}
+
 function mapPointerToCapture(pointerPayload) {
   const display = selectedDisplay();
   if (!display || !video.videoWidth || !video.videoHeight) {
@@ -1742,9 +1750,10 @@ function mapPointerToCapture(pointerPayload) {
 
 function scanMotionTarget(settings, timestamp) {
   const motionAwareMode = settings.focusMode === 'motion' || settings.focusMode === 'director';
+  const collectVisualFallback = shouldCollectVisualAttention(settings);
   const shouldScan = settings.smartMaster
     && settings.autoZoom
-    && settings.motionFocus
+    && (settings.motionFocus || collectVisualFallback)
     && motionAwareMode
     && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
 
@@ -2445,6 +2454,9 @@ function drawPrivacyBlur(settings) {
 
 function drawCursorSpotlight(settings) {
   if (!settings.smartMaster || !settings.cursorSpotlight) {
+    return;
+  }
+  if (state.renderContext && state.renderContext.cursorUsable === false) {
     return;
   }
 
@@ -3253,6 +3265,228 @@ function pushAttentionEvent(events, event) {
   });
 }
 
+function cursorTelemetryQuality(samples = [], durationMs = 0) {
+  if (!Array.isArray(samples) || samples.length < 3) {
+    return {
+      usable: false,
+      reason: 'not-enough-cursor-samples',
+      samples: Array.isArray(samples) ? samples.length : 0,
+      maxVelocity: 0,
+      pathDistance: 0,
+      uniquePoints: 0,
+      allZero: false
+    };
+  }
+
+  let maxVelocity = 0;
+  let pathDistance = 0;
+  let allZeroCount = 0;
+  const uniquePoints = new Set();
+  let previous = null;
+
+  for (const sample of samples) {
+    const x = finiteNumber(sample.x, 0);
+    const y = finiteNumber(sample.y, 0);
+    const screenX = finiteNumber(sample.screen_x, 0);
+    const screenY = finiteNumber(sample.screen_y, 0);
+    const velocity = Math.abs(finiteNumber(sample.velocity, 0));
+    maxVelocity = Math.max(maxVelocity, velocity);
+    uniquePoints.add(`${Math.round(x * 1000)}:${Math.round(y * 1000)}`);
+    if (x === 0 && y === 0 && screenX === 0 && screenY === 0 && velocity === 0) {
+      allZeroCount += 1;
+    }
+    if (previous) {
+      pathDistance += Math.hypot(x - previous.x, y - previous.y);
+    }
+    previous = { x, y };
+  }
+
+  const allZero = allZeroCount >= Math.max(3, samples.length * 0.92);
+  const enoughMovement = maxVelocity >= 0.003 || pathDistance >= Math.max(0.05, durationMs / 180000);
+  const usable = !allZero && uniquePoints.size >= 3 && enoughMovement;
+
+  return {
+    usable,
+    reason: usable ? 'usable' : allZero ? 'stuck-at-zero' : 'stationary-or-low-confidence',
+    samples: samples.length,
+    maxVelocity: roundTo(maxVelocity, 5),
+    pathDistance: roundTo(pathDistance, 5),
+    uniquePoints: uniquePoints.size,
+    allZero
+  };
+}
+
+function spacedTelemetryEvents(items, minGapMs, pickScore) {
+  const picked = [];
+  const sorted = items
+    .filter((item) => Number.isFinite(finiteNumber(item.time_ms, NaN)))
+    .sort((a, b) => pickScore(b) - pickScore(a));
+
+  for (const item of sorted) {
+    const atMs = finiteNumber(item.time_ms, 0);
+    if (picked.some((chosen) => Math.abs(finiteNumber(chosen.time_ms, 0) - atMs) < minGapMs)) {
+      continue;
+    }
+    picked.push(item);
+  }
+
+  return picked.sort((a, b) => finiteNumber(a.time_ms, 0) - finiteNumber(b.time_ms, 0));
+}
+
+function fallbackAttentionScale(settings, confidence, maxScale = null) {
+  const requested = Math.max(1.05, finiteNumber(settings.zoomStrength, 1.7));
+  const ceiling = maxScale || Math.min(requested, 1.62);
+  return roundTo(clamp(1 + (requested - 1) * (0.42 + confidence * 0.38), 1.08, ceiling), 4);
+}
+
+function pushFallbackAttentionEvent(events, event, stats) {
+  const before = events.length;
+  pushAttentionEvent(events, event);
+  if (events.length > before) {
+    stats.fallbackEvents += 1;
+    stats.sources[event.source || event.type || 'fallback'] = (stats.sources[event.source || event.type || 'fallback'] || 0) + 1;
+  }
+}
+
+function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
+  const settings = timelinePlan.settings;
+  const durationMs = Math.max(0, finiteNumber(timelinePlan.durationMs, 0));
+  const telemetry = timelinePlan.telemetry || {};
+  const stats = {
+    fallbackEvents: 0,
+    strategy: 'none',
+    sources: {},
+    cursor: cursorTelemetryQuality(telemetry.cursor, durationMs)
+  };
+
+  if (!settings.smartMaster || !settings.autoZoom || settings.focusMode === 'wide' || durationMs < 1200) {
+    return stats;
+  }
+
+  const existingStrongEvents = events.filter((event) => event.type !== 'wide').length;
+  if (existingStrongEvents >= 1) {
+    stats.strategy = 'primary-attention';
+    return stats;
+  }
+
+  const clickEvents = Array.isArray(telemetry.clicks) ? telemetry.clicks : [];
+  for (const click of clickEvents.slice(0, 16)) {
+    const atMs = finiteNumber(click.time_ms, finiteNumber(click.time, 0) * 1000);
+    const confidence = clamp01(finiteNumber(click.confidence, 0.92));
+    pushFallbackAttentionEvent(events, {
+      time: roundTo(atMs / 1000, 3),
+      time_ms: Math.round(atMs),
+      x: roundTo(clamp01(finiteNumber(click.x, 0.5)), 5),
+      y: roundTo(clamp01(finiteNumber(click.y, 0.5)), 5),
+      type: 'click',
+      confidence,
+      duration_ms: 620,
+      scale: fallbackAttentionScale(settings, confidence),
+      reason: click.reason || click.type || 'click telemetry',
+      source: 'click_telemetry',
+      output_width: outputSize.width,
+      output_height: outputSize.height
+    }, stats);
+  }
+
+  const motionEvents = spacedTelemetryEvents(Array.isArray(telemetry.motion) ? telemetry.motion : [], 1100, (event) => finiteNumber(event.strength, 0))
+    .slice(0, Math.max(4, Math.round(durationMs / 12000)));
+  for (const motion of motionEvents) {
+    const atMs = finiteNumber(motion.time_ms, finiteNumber(motion.time, 0) * 1000);
+    const strength = clamp01(finiteNumber(motion.strength, 0.2));
+    const confidence = clamp01(0.72 + strength * 0.22);
+    pushFallbackAttentionEvent(events, {
+      time: roundTo(atMs / 1000, 3),
+      time_ms: Math.round(atMs),
+      x: roundTo(clamp01(finiteNumber(motion.x, 0.5)), 5),
+      y: roundTo(clamp01(finiteNumber(motion.y, 0.5)), 5),
+      type: 'motion',
+      confidence,
+      duration_ms: 980,
+      scale: fallbackAttentionScale(settings, confidence, Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.55)),
+      reason: 'visual activity fallback',
+      source: 'visual_motion_fallback',
+      output_width: outputSize.width,
+      output_height: outputSize.height
+    }, stats);
+  }
+
+  if (stats.cursor.usable) {
+    const cursorEvents = spacedTelemetryEvents(
+      (telemetry.cursor || []).filter((sample) => finiteNumber(sample.velocity, 0) >= 0.003),
+      1400,
+      (sample) => finiteNumber(sample.velocity, 0)
+    ).slice(0, Math.max(4, Math.round(durationMs / 11000)));
+
+    for (const cursor of cursorEvents) {
+      const atMs = finiteNumber(cursor.time_ms, finiteNumber(cursor.time, 0) * 1000);
+      const velocity = clamp01(finiteNumber(cursor.velocity, 0) / 0.05);
+      const confidence = clamp01(0.72 + velocity * 0.2);
+      pushFallbackAttentionEvent(events, {
+        time: roundTo(atMs / 1000, 3),
+        time_ms: Math.round(atMs),
+        x: roundTo(clamp01(finiteNumber(cursor.x, 0.5)), 5),
+        y: roundTo(clamp01(finiteNumber(cursor.y, 0.5)), 5),
+        type: 'attention',
+        confidence,
+        duration_ms: 900,
+        scale: fallbackAttentionScale(settings, confidence),
+        reason: 'cursor telemetry fallback',
+        source: 'cursor_telemetry',
+        output_width: outputSize.width,
+        output_height: outputSize.height
+      }, stats);
+    }
+  }
+
+  const enoughFallback = stats.fallbackEvents >= Math.max(1, Math.min(3, Math.round(durationMs / 16000)));
+  if (!enoughFallback && durationMs >= 8000) {
+    const needed = Math.max(1, Math.min(4, Math.round(durationMs / 12000))) - stats.fallbackEvents;
+    const anchors = [
+      { x: 0.42, y: 0.5 },
+      { x: 0.58, y: 0.5 },
+      { x: 0.5, y: 0.42 },
+      { x: 0.5, y: 0.58 }
+    ];
+    const startMs = clamp(durationMs * 0.18, 1200, 3200);
+    const usableWindowMs = Math.max(1200, durationMs - startMs - 1200);
+    const spacingMs = usableWindowMs / Math.max(1, needed);
+
+    for (let index = 0; index < needed; index += 1) {
+      const atMs = clamp(startMs + spacingMs * index, 900, Math.max(900, durationMs - 1200));
+      const anchor = anchors[index % anchors.length];
+      pushFallbackAttentionEvent(events, {
+        time: roundTo(atMs / 1000, 3),
+        time_ms: Math.round(atMs),
+        x: anchor.x,
+        y: anchor.y,
+        type: 'focus',
+        confidence: 0.72,
+        duration_ms: 1300,
+        scale: fallbackAttentionScale(settings, 0.72, Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.42)),
+        reason: stats.cursor.reason === 'stuck-at-zero'
+          ? 'failsafe focus because cursor telemetry was stuck at zero'
+          : 'failsafe focus because attention telemetry was empty',
+        source: 'director_failsafe',
+        output_width: outputSize.width,
+        output_height: outputSize.height
+      }, stats);
+    }
+  }
+
+  if (stats.sources.click_telemetry) {
+    stats.strategy = 'click-telemetry';
+  } else if (stats.sources.visual_motion_fallback) {
+    stats.strategy = 'visual-motion';
+  } else if (stats.sources.cursor_telemetry) {
+    stats.strategy = 'cursor-telemetry';
+  } else if (stats.sources.director_failsafe) {
+    stats.strategy = 'director-failsafe';
+  }
+
+  return stats;
+}
+
 function buildAttentionTimeline(timelinePlan, outputSize) {
   const settings = timelinePlan.settings;
   const events = [];
@@ -3299,12 +3533,22 @@ function buildAttentionTimeline(timelinePlan, outputSize) {
     });
   }
 
+  const primaryEventCount = events.length;
+  const fallbackStats = appendTelemetryFallbackAttention(events, timelinePlan, outputSize);
   events.sort((a, b) => a.time_ms - b.time_ms || b.confidence - a.confidence);
 
   return {
     schema: 'smartie.attention_timeline.v1',
     version: 1,
     generated_at: new Date().toISOString(),
+    stats: {
+      count: events.length,
+      primary_events: primaryEventCount,
+      fallback_events: fallbackStats.fallbackEvents,
+      fallback_strategy: fallbackStats.strategy,
+      fallback_sources: fallbackStats.sources,
+      cursor_quality: fallbackStats.cursor
+    },
     source: {
       duration_ms: Math.round(finiteNumber(timelinePlan.durationMs, 0)),
       duration_sec: roundTo(finiteNumber(timelinePlan.durationMs, 0) / 1000, 3),
@@ -3686,6 +3930,9 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
   const attentionEvents = attentionTimeline.events.length;
   const segmentCount = cameraPlan.segments.length;
   const zoomCoverage = finiteNumber(cameraPlan.stats.zoomCoverage, 0);
+  const fallbackStats = attentionTimeline.stats || {};
+  const fallbackEvents = finiteNumber(fallbackStats.fallback_events, 0);
+  const cursorQuality = fallbackStats.cursor_quality || {};
 
   if (attentionEvents >= 3 && segmentCount === 0 && timelinePlan.settings.autoZoom) {
     warnings.push('Attention telemetry exists but no zoom segments were selected.');
@@ -3705,6 +3952,12 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
   if (effectiveFps < finiteNumber(timelinePlan.settings.fps, effectiveFps)) {
     warnings.push('Effective FPS is lower than requested because of the selected recording engine/profile.');
   }
+  if (fallbackEvents > 0) {
+    warnings.push(`Director used ${fallbackStats.fallback_strategy || 'fallback'} attention because primary attention telemetry was empty.`);
+  }
+  if (cursorQuality.usable === false && cursorQuality.samples > 0) {
+    warnings.push(`Cursor telemetry was ${cursorQuality.reason}; Smartie used fallback attention.`);
+  }
 
   return {
     schema: 'smartie.render_qa.v1',
@@ -3723,6 +3976,10 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
       performanceResolvedMode: timelinePlan.settings.performanceResolvedMode || activePerformanceMode(timelinePlan.settings),
       performanceAdaptiveLevel: state.performance.adaptiveLevel,
       attentionEvents,
+      primaryAttentionEvents: finiteNumber(fallbackStats.primary_events, attentionEvents),
+      fallbackAttentionEvents: fallbackEvents,
+      fallbackStrategy: fallbackStats.fallback_strategy || 'none',
+      cursorTelemetryQuality: cursorQuality,
       cameraSegments: segmentCount,
       keyframes: cameraPlan.keyframes.length,
       zoomCoverage,
@@ -3847,8 +4104,9 @@ function cameraFrameAt(cameraPlan, atMs) {
 function drawSmartTimelineFrame(settings, timelinePlan, atMs) {
   const sample = timelineSampleAt(timelinePlan.timeline, atMs);
   const cameraFrame = cameraFrameAt(timelinePlan.cameraPlan, atMs) || sample.frame;
+  const cursorUsable = timelinePlan.telemetryQuality?.cursor?.usable !== false;
 
-  state.renderContext = { atMs };
+  state.renderContext = { atMs, cursorUsable };
   state.frame = { ...cameraFrame };
   state.pointer = {
     ...state.pointer,
@@ -3859,9 +4117,11 @@ function drawSmartTimelineFrame(settings, timelinePlan, atMs) {
 
   drawVideoFrame(settings);
   drawPrivacyBlur(settings);
-  drawTimelineCursorTrail(settings, atMs, timelinePlan.trail);
-  drawCursorSpotlight(settings);
-  drawTimelinePulses(settings, atMs, timelinePlan.pulses);
+  if (cursorUsable) {
+    drawTimelineCursorTrail(settings, atMs, timelinePlan.trail);
+    drawCursorSpotlight(settings);
+    drawTimelinePulses(settings, atMs, timelinePlan.pulses);
+  }
   drawTimelineMarkerOverlay(settings, atMs, timelinePlan.markers);
   drawKeyboardOverlay(settings);
   drawTitleOverlay(settings);
@@ -3873,7 +4133,7 @@ function drawLoop(timestamp = performance.now()) {
     return;
   }
 
-  const settings = getSettings();
+  const settings = state.recordingSettings || getSettings();
   const smartCanvasRecording = usesSmartCanvasRecording(settings);
   const recordingFps = effectiveRecordingFps(settings);
   const drawFps = effectiveDrawFps(settings);
@@ -4787,7 +5047,14 @@ async function saveRecording() {
     markers,
     timeline: refineSmartTimeline(state.smartTimeline.slice()),
     trail: state.smartTrail.slice(),
-    pulses: state.smartPulses.slice()
+    pulses: state.smartPulses.slice(),
+    telemetry: {
+      cursor: state.telemetry.cursor.slice(),
+      clicks: state.telemetry.clicks.slice(),
+      keyboard: state.telemetry.keyboard.slice(),
+      motion: state.telemetry.motion.slice(),
+      accessibility: state.telemetry.accessibility.slice()
+    }
   };
   const shouldPostRender = usesHybridSmartRender(settings)
     && settings.smartMaster
@@ -4808,6 +5075,9 @@ async function saveRecording() {
     timelineSampleCount: timelinePlan.timeline.length
   });
   const attentionTimeline = buildAttentionTimeline(timelinePlan, finalOutputSize);
+  timelinePlan.telemetryQuality = {
+    cursor: attentionTimeline.stats?.cursor_quality || cursorTelemetryQuality(timelinePlan.telemetry.cursor, durationMs)
+  };
   const cameraPlan = compileSmartDirectorPlan(timelinePlan, attentionTimeline, finalOutputSize);
   timelinePlan.cameraPlan = cameraPlan;
   const renderQa = buildRenderQa({

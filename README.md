@@ -15,6 +15,7 @@ saved video after recording.
 - Adaptive performance governor with Auto, Potato saver, Ultra smooth, Balanced, and Max quality profiles.
 - Disk-backed recording sessions that stream MediaRecorder chunks to the main process instead of holding the whole take in renderer memory.
 - Smart Director v2 auto zoom with telemetry capture, cue scoring, offline camera-plan compilation, render QA, and smooth keyframed playback.
+- Director failsafe planning for Wayland/window-source recordings where cursor telemetry is unavailable or stuck.
 - Smart focus modes for Smart Director, cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Director style presets for subtle, balanced, or cinematic camera plans.
 - Editable Director Plan controls for hiding shots, adjusting zoom intensity, and changing shot duration after a take.
@@ -145,6 +146,11 @@ temporary main-process recording session on disk. Smart zoom, vector cursor
 polish, overlays, and camera-plan rendering happen after stop, so weaker systems
 do not pay that cost while recording. Live smart effects remain available, but
 Auto and Potato saver move live canvas recording to hybrid when needed.
+
+Smartie also evaluates telemetry quality before compiling the camera plan. If
+Wayland or a window-source capture reports unusable all-zero cursor data, the
+Director now falls back to visual motion telemetry and then conservative
+failsafe focus shots instead of rendering a long wide-only take.
 
 On Linux/X11, semantic context can include the active window title through
 `xdotool` when available. On Wayland, Smartie records the limitation in
