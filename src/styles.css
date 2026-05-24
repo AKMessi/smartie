@@ -350,6 +350,55 @@ canvas {
   font-size: 11px;
 }
 
+.plan-status {
+  display: block;
+  color: var(--muted);
+  text-align: left;
+}
+
+.director-plan-list {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-segment {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: #13161b;
+}
+
+.plan-segment strong,
+.plan-segment span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-segment strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.plan-segment span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.plan-segment em {
+  color: var(--amber);
+  font-size: 11px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
 .toggle-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

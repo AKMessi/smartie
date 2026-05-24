@@ -12,8 +12,9 @@ saved video after recording.
 - Hybrid Smartie pipeline that records native video first and post-renders smart effects into the saved file.
 - Native smooth recording pipeline for direct desktop capture when no baked effects are needed.
 - Optional canvas-based live smart-effects pipeline for fully real-time baked effects.
-- Smart Director auto zoom with scored cursor intent, dwell, motion, marker, keyboard, and emphasis signals plus offline path smoothing.
+- Smart Director v2 auto zoom with telemetry capture, cue scoring, offline camera-plan compilation, render QA, and smooth keyframed playback.
 - Smart focus modes for Smart Director, cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
+- Director style presets for subtle, balanced, or cinematic camera plans.
 - Master Smart Features toggle plus individual toggles for:
   - Auto zoom
   - Cursor spotlight
@@ -35,7 +36,7 @@ saved video after recording.
 - Recent takes list with quick reveal actions.
 - Chapter markers with a shortcut, automatic smart moments, and brief rendered marker overlay.
 - JSON sidecar metadata next to every saved video with markers and smart settings.
-- Vex-compatible Smartie bundle sidecar next to every saved video with recording, manifest, metadata, and attention timeline files.
+- Smartie project sidecar next to every saved video with recording, manifest, metadata, attention timeline, and editable camera plan files.
 - WebVTT chapter sidecars for marker import into players and editors.
 - PNG snapshot capture from the polished recording canvas.
 - Take title naming with optional rendered title card and lower-third overlay.
@@ -95,29 +96,26 @@ npm run smoke
 npm run doctor
 ```
 
-## Vex Integration
+## Smartie Project
 
-Each saved take writes a bundle directory beside the WebM:
+Each saved take writes a Smartie project directory beside the WebM:
 
 ```text
 smartie-my-take.webm
 smartie-my-take.smartie.json
 smartie-my-take.chapters.vtt
-smartie-my-take.smartie-bundle/
+smartie-my-take.smartie-project/
   manifest.json
   recording.webm
   attention.timeline.json
+  camera.plan.json
   recording.smartie.json
 ```
 
-The bundle is designed for Vex's optional Smartie importer:
-
-```bash
-vex import-smartie /path/to/smartie-my-take.smartie-bundle --project "Smartie Demo" --render
-```
-
-Smartie records the source video and director telemetry; Vex can use the
-attention timeline for production-grade post-production zoom planning.
+The attention timeline stores cursor, click, keyboard, marker, and director
+cues. The camera plan stores the compiled smart zoom shots, keyframes, QA
+warnings, and editable segment metadata so Smartie can evolve into a full
+timeline editor without changing the capture format.
 
 ## Package
 

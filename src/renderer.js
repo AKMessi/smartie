@@ -70,9 +70,13 @@ const elements = {
   outputFolder: document.querySelector('#outputFolder'),
   chooseOutputFolder: document.querySelector('#chooseOutputFolder'),
   focusMode: document.querySelector('#focusMode'),
+  directorStyle: document.querySelector('#directorStyle'),
   focusLock: document.querySelector('#focusLock'),
   clearFocusLock: document.querySelector('#clearFocusLock'),
   focusStatus: document.querySelector('#focusStatus'),
+  directorPlanStatus: document.querySelector('#directorPlanStatus'),
+  directorPlanList: document.querySelector('#directorPlanList'),
+  revealProject: document.querySelector('#revealProject'),
   zoomStrength: document.querySelector('#zoomStrength'),
   zoomStrengthValue: document.querySelector('#zoomStrengthValue'),
   motionSensitivity: document.querySelector('#motionSensitivity'),
@@ -144,6 +148,8 @@ const state = {
     x: 0.5,
     y: 0.5
   },
+  lastSmartProjectPath: null,
+  lastCameraPlan: null,
   attention: {
     active: {
       source: 'wide',
@@ -261,6 +267,7 @@ const persistedSettingKeys = [
   'saveMode',
   'exportFormat',
   'focusMode',
+  'directorStyle',
   'zoomStrength',
   'motionSensitivity',
   'smoothing',
@@ -337,6 +344,7 @@ function loadRecentRecordings() {
 
     if (!state.lastRecordingPath && state.recentRecordings[0]) {
       state.lastRecordingPath = state.recentRecordings[0].filePath;
+      state.lastSmartProjectPath = state.recentRecordings[0].projectPath || null;
     }
   } catch (error) {
     console.warn('Could not load Smartie recent recordings.', error);
@@ -550,6 +558,53 @@ function renderRecentRecordings() {
   }
 }
 
+function renderDirectorPlan(plan = state.lastCameraPlan) {
+  if (!elements.directorPlanStatus || !elements.directorPlanList) {
+    return;
+  }
+
+  elements.directorPlanList.textContent = '';
+  const segments = plan && Array.isArray(plan.segments) ? plan.segments : [];
+  const stats = plan?.stats || {};
+  const warnings = plan?.qa?.warnings || [];
+
+  if (!plan) {
+    elements.directorPlanStatus.textContent = 'No rendered plan yet.';
+    return;
+  }
+
+  const coverage = Math.round(finiteNumber(stats.zoomCoverage, 0) * 100);
+  const sourceEvents = finiteNumber(stats.sourceEvents, 0);
+  const warningText = warnings.length > 0 ? ` - ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : '';
+  elements.directorPlanStatus.textContent = `${segments.length} smart shots from ${sourceEvents} cues - ${coverage}% coverage${warningText}`;
+
+  if (segments.length === 0) {
+    const empty = document.createElement('span');
+    empty.className = 'empty-mini';
+    empty.textContent = 'Director kept this take wide.';
+    elements.directorPlanList.append(empty);
+    return;
+  }
+
+  for (const segment of segments.slice(0, 8)) {
+    const card = document.createElement('div');
+    card.className = 'plan-segment';
+
+    const details = document.createElement('div');
+    const title = document.createElement('strong');
+    const meta = document.createElement('span');
+    const scale = document.createElement('em');
+
+    title.textContent = `${segment.cue || 'focus'} ${formatTime(segment.startMs)}-${formatTime(segment.endMs)}`;
+    meta.textContent = segment.reason || `${Math.round(finiteNumber(segment.confidence, 0) * 100)}% confidence`;
+    scale.textContent = `${finiteNumber(segment.scale, 1).toFixed(2)}x`;
+
+    details.append(title, meta);
+    card.append(details, scale);
+    elements.directorPlanList.append(card);
+  }
+}
+
 function rememberRecording(recording) {
   state.recentRecordings = [
     recording,
@@ -608,6 +663,7 @@ function getSettings() {
     exportFormat: elements.exportFormat.value,
     outputDir: state.outputDir,
     focusMode: elements.focusMode.value,
+    directorStyle: elements.directorStyle.value,
     zoomStrength: Number(elements.zoomStrength.value),
     motionSensitivity: Number(elements.motionSensitivity.value),
     smoothing: Number(elements.smoothing.value),
@@ -753,6 +809,7 @@ function syncControls() {
   elements.focusLock.disabled = !elements.smartMaster.checked || !elements.autoZoom.checked || elements.focusMode.value === 'wide';
   elements.clearFocusLock.disabled = !state.focusLock.active;
   elements.revealRecording.disabled = !state.lastRecordingPath;
+  elements.revealProject.disabled = !state.lastSmartProjectPath;
 
   for (const input of document.querySelectorAll('.toggle-grid input')) {
     input.disabled = !elements.smartMaster.checked;
@@ -2663,11 +2720,456 @@ function buildAttentionTimeline(timelinePlan, outputSize) {
   };
 }
 
+function directorStyleProfile(settings) {
+  const profiles = {
+    subtle: {
+      threshold: 0.68,
+      scaleMultiplier: 0.78,
+      minShotMs: 1120,
+      maxShotMs: 2600,
+      mergeGapMs: 620,
+      transitionMs: 520,
+      maxSegmentsPerMinute: 6
+    },
+    balanced: {
+      threshold: 0.55,
+      scaleMultiplier: 1,
+      minShotMs: 920,
+      maxShotMs: 3200,
+      mergeGapMs: 520,
+      transitionMs: 460,
+      maxSegmentsPerMinute: 9
+    },
+    cinematic: {
+      threshold: 0.48,
+      scaleMultiplier: 1.14,
+      minShotMs: 820,
+      maxShotMs: 3800,
+      mergeGapMs: 480,
+      transitionMs: 560,
+      maxSegmentsPerMinute: 12
+    }
+  };
+
+  return profiles[settings.directorStyle] || profiles.balanced;
+}
+
+function cueScore(cue) {
+  return {
+    click: 1,
+    keyboard: 0.9,
+    dwell: 0.84,
+    attention: 0.72,
+    focus: 0.72,
+    motion: 0.58,
+    wide: 0
+  }[cue] || 0.62;
+}
+
+function cueRank(cue) {
+  return {
+    click: 6,
+    keyboard: 5,
+    dwell: 4,
+    focus: 3,
+    attention: 2,
+    motion: 1,
+    wide: 0
+  }[cue] || 1;
+}
+
+function cameraShotDurationMs(cue, score, profile, eventDurationMs = 0) {
+  const base = {
+    click: 980,
+    keyboard: 1180,
+    dwell: 1660,
+    attention: 1180,
+    focus: 1280,
+    motion: 880
+  }[cue] || 1040;
+  const eventHold = Math.max(0, finiteNumber(eventDurationMs, 0));
+  const scored = base + score * 520;
+  return clamp(Math.max(profile.minShotMs, eventHold + 260, scored), profile.minShotMs, profile.maxShotMs);
+}
+
+function cameraPreRollMs(cue) {
+  if (cue === 'click') {
+    return 120;
+  }
+
+  if (cue === 'keyboard') {
+    return 80;
+  }
+
+  return 100;
+}
+
+function cameraTargetScale(event, score, settings, profile) {
+  const requested = Math.max(1.05, finiteNumber(settings.zoomStrength, 1.7));
+  const liveScale = Math.max(1, finiteNumber(event.scale, 1));
+  const scoredScale = 1 + (requested - 1) * (0.5 + score * 0.5) * profile.scaleMultiplier;
+  const blended = scoredScale * 0.78 + liveScale * 0.22;
+  return roundTo(clamp(blended, 1.04, Math.min(2.45, requested + 0.38)), 4);
+}
+
+function boundedCameraPoint(x, y, scale) {
+  const visible = 1 / Math.max(1, scale);
+  const margin = clamp(visible * 0.32, 0.04, 0.42);
+  return {
+    x: roundTo(clamp(finiteNumber(x, 0.5), margin, 1 - margin), 5),
+    y: roundTo(clamp(finiteNumber(y, 0.5), margin, 1 - margin), 5)
+  };
+}
+
+function directorCandidateFromEvent(event, settings, profile, durationMs) {
+  const cue = String(event.type || event.cue || 'attention').replace(/[-\s]+/g, '_');
+  if (cue === 'wide') {
+    return null;
+  }
+
+  const confidence = clamp01(finiteNumber(event.confidence, 0.5));
+  const score = roundTo(confidence * 0.72 + cueScore(cue) * 0.28, 3);
+  if (score < profile.threshold) {
+    return null;
+  }
+
+  const startMs = clamp(finiteNumber(event.time_ms, finiteNumber(event.time, 0) * 1000) - cameraPreRollMs(cue), 0, durationMs);
+  const shotDuration = cameraShotDurationMs(cue, score, profile, finiteNumber(event.duration_ms, 0));
+  let endMs = Math.min(durationMs, startMs + shotDuration);
+  if (endMs - startMs < profile.minShotMs && endMs >= durationMs) {
+    endMs = durationMs;
+  }
+  if (endMs - startMs < profile.minShotMs) {
+    return null;
+  }
+
+  const targetScale = cameraTargetScale(event, score, settings, profile);
+  if (targetScale < 1.045) {
+    return null;
+  }
+
+  const point = boundedCameraPoint(event.x, event.y, targetScale);
+  return {
+    id: '',
+    startMs: Math.round(startMs),
+    endMs: Math.round(endMs),
+    x: point.x,
+    y: point.y,
+    scale: targetScale,
+    cue,
+    score,
+    confidence,
+    reason: event.reason || cue,
+    source: event.source || cue,
+    sourceCount: 1,
+    editable: true
+  };
+}
+
+function mergeDirectorCandidates(candidates, profile) {
+  const merged = [];
+  for (const candidate of candidates.sort((a, b) => a.startMs - b.startMs)) {
+    const previous = merged[merged.length - 1];
+    if (!previous) {
+      merged.push({ ...candidate });
+      continue;
+    }
+
+    const gapMs = candidate.startMs - previous.endMs;
+    const distance = Math.hypot(candidate.x - previous.x, candidate.y - previous.y);
+    if (gapMs <= profile.mergeGapMs && distance <= 0.16) {
+      const previousWeight = previous.score * previous.sourceCount;
+      const nextWeight = candidate.score * candidate.sourceCount;
+      const totalWeight = Math.max(0.001, previousWeight + nextWeight);
+      previous.endMs = Math.max(previous.endMs, candidate.endMs);
+      previous.x = roundTo((previous.x * previousWeight + candidate.x * nextWeight) / totalWeight, 5);
+      previous.y = roundTo((previous.y * previousWeight + candidate.y * nextWeight) / totalWeight, 5);
+      previous.scale = roundTo(Math.max(previous.scale, candidate.scale), 4);
+      previous.score = roundTo(Math.max(previous.score, candidate.score, (previous.score + candidate.score) / 2), 3);
+      previous.confidence = roundTo(Math.max(previous.confidence, candidate.confidence), 3);
+      previous.sourceCount += candidate.sourceCount;
+      if (cueRank(candidate.cue) > cueRank(previous.cue)) {
+        previous.cue = candidate.cue;
+        previous.reason = candidate.reason;
+        previous.source = candidate.source;
+      }
+      continue;
+    }
+
+    merged.push({ ...candidate });
+  }
+
+  return merged;
+}
+
+function resolveDirectorOverlaps(candidates, profile) {
+  const resolved = [];
+  for (const candidate of candidates.sort((a, b) => a.startMs - b.startMs)) {
+    const previous = resolved[resolved.length - 1];
+    if (!previous) {
+      resolved.push({ ...candidate });
+      continue;
+    }
+
+    const gapMs = candidate.startMs - previous.endMs;
+    if (gapMs >= 140) {
+      resolved.push({ ...candidate });
+      continue;
+    }
+
+    const distance = Math.hypot(candidate.x - previous.x, candidate.y - previous.y);
+    if (distance <= 0.13) {
+      previous.endMs = Math.max(previous.endMs, candidate.endMs);
+      previous.scale = roundTo(Math.max(previous.scale, candidate.scale), 4);
+      previous.score = roundTo(Math.max(previous.score, candidate.score), 3);
+      previous.sourceCount += candidate.sourceCount;
+      continue;
+    }
+
+    if (candidate.score <= previous.score) {
+      const trimmedEnd = Math.min(previous.endMs, candidate.startMs - 140);
+      if (trimmedEnd - previous.startMs >= profile.minShotMs) {
+        previous.endMs = Math.round(trimmedEnd);
+        resolved.push({ ...candidate });
+      }
+      continue;
+    }
+
+    const shiftedStart = previous.endMs + 140;
+    if (candidate.endMs - shiftedStart >= profile.minShotMs) {
+      resolved.push({
+        ...candidate,
+        startMs: Math.round(shiftedStart)
+      });
+    }
+  }
+
+  return resolved.filter((candidate) => candidate.endMs - candidate.startMs >= profile.minShotMs);
+}
+
+function selectDirectorSegments(candidates, durationMs, profile) {
+  const maxSegments = Math.max(4, Math.round((durationMs / 60000) * profile.maxSegmentsPerMinute));
+  return candidates
+    .slice()
+    .sort((a, b) => b.score - a.score || a.startMs - b.startMs)
+    .slice(0, maxSegments)
+    .sort((a, b) => a.startMs - b.startMs)
+    .map((segment, index) => ({
+      ...segment,
+      id: `shot-${String(index + 1).padStart(3, '0')}`
+    }));
+}
+
+function addCameraKeyframe(keyframes, atMs, frame, reason) {
+  const safeAtMs = Math.max(0, Math.round(finiteNumber(atMs, 0)));
+  const previous = keyframes[keyframes.length - 1];
+  const keyframe = {
+    atMs: safeAtMs,
+    x: roundTo(clamp01(frame.x), 5),
+    y: roundTo(clamp01(frame.y), 5),
+    scale: roundTo(Math.max(1, finiteNumber(frame.scale, 1)), 4),
+    reason
+  };
+
+  if (previous && Math.abs(previous.atMs - keyframe.atMs) < 20) {
+    keyframes[keyframes.length - 1] = keyframe;
+    return;
+  }
+
+  keyframes.push(keyframe);
+}
+
+function buildCameraKeyframes(segments, durationMs, profile) {
+  const keyframes = [];
+  const wide = { x: 0.5, y: 0.5, scale: 1 };
+  addCameraKeyframe(keyframes, 0, wide, 'opening wide');
+
+  segments.forEach((segment, index) => {
+    const previous = segments[index - 1];
+    const next = segments[index + 1];
+    const target = { x: segment.x, y: segment.y, scale: segment.scale };
+    const transitionIn = Math.min(profile.transitionMs, Math.max(220, (segment.endMs - segment.startMs) * 0.28));
+    const transitionOut = Math.min(profile.transitionMs, Math.max(240, (segment.endMs - segment.startMs) * 0.3));
+    const hasPreviousConnection = previous && segment.startMs - previous.endMs <= profile.mergeGapMs + 260;
+    const hasNextConnection = next && next.startMs - segment.endMs <= profile.mergeGapMs + 260;
+
+    if (!hasPreviousConnection) {
+      addCameraKeyframe(keyframes, Math.max(0, segment.startMs - transitionIn), wide, 'compose wide');
+    }
+
+    addCameraKeyframe(keyframes, segment.startMs, target, segment.reason || segment.cue);
+    addCameraKeyframe(keyframes, segment.endMs, target, segment.reason || segment.cue);
+
+    if (!hasNextConnection) {
+      addCameraKeyframe(keyframes, Math.min(durationMs, segment.endMs + transitionOut), wide, 'return wide');
+    }
+  });
+
+  addCameraKeyframe(keyframes, durationMs, wide, 'closing wide');
+  return keyframes.sort((a, b) => a.atMs - b.atMs);
+}
+
+function validateCameraPlan(segments, keyframes, durationMs) {
+  const warnings = [];
+  const errors = [];
+  let previous = null;
+  let maxScale = 1;
+
+  for (const segment of segments) {
+    if (segment.startMs < 0 || segment.endMs <= segment.startMs || segment.endMs > durationMs + 50) {
+      errors.push(`${segment.id} has invalid timing.`);
+    }
+    if (![segment.x, segment.y, segment.scale].every(Number.isFinite)) {
+      errors.push(`${segment.id} contains invalid camera values.`);
+    }
+    if (segment.scale > 2.45) {
+      warnings.push(`${segment.id} is close to the maximum zoom.`);
+    }
+    if (previous) {
+      const gap = segment.startMs - previous.endMs;
+      const jump = Math.hypot(segment.x - previous.x, segment.y - previous.y);
+      if (gap < 220 && jump > 0.48) {
+        warnings.push(`${segment.id} moves far from the previous shot.`);
+      }
+    }
+    maxScale = Math.max(maxScale, segment.scale);
+    previous = segment;
+  }
+
+  if (segments.length === 0) {
+    warnings.push('No confident attention events were found; the render stays wide.');
+  }
+
+  const zoomMs = segments.reduce((total, segment) => total + Math.max(0, segment.endMs - segment.startMs), 0);
+  const coverage = durationMs > 0 ? zoomMs / durationMs : 0;
+  if (segments.length > 0 && coverage > 0.72) {
+    warnings.push('Zoom coverage is high; consider Subtle director style for calmer output.');
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    stats: {
+      segmentCount: segments.length,
+      keyframeCount: keyframes.length,
+      zoomCoverage: roundTo(coverage, 3),
+      maxScale: roundTo(maxScale, 3)
+    }
+  };
+}
+
+function compileSmartDirectorPlan(timelinePlan, attentionTimeline, outputSize) {
+  const settings = timelinePlan.settings;
+  const durationMs = Math.max(0, Math.round(finiteNumber(timelinePlan.durationMs, 0)));
+  const profile = directorStyleProfile(settings);
+  const disabled = !settings.smartMaster || !settings.autoZoom || settings.focusMode === 'wide';
+  let candidates = [];
+
+  if (!disabled && durationMs > 0) {
+    candidates = (attentionTimeline.events || [])
+      .map((event) => directorCandidateFromEvent(event, settings, profile, durationMs))
+      .filter(Boolean);
+    candidates = mergeDirectorCandidates(candidates, profile);
+    candidates = resolveDirectorOverlaps(candidates, profile);
+    candidates = selectDirectorSegments(candidates, durationMs, profile);
+  }
+
+  const keyframes = buildCameraKeyframes(candidates, durationMs, profile);
+  const qa = validateCameraPlan(candidates, keyframes, durationMs);
+
+  return {
+    schema: 'smartie.camera_plan.v1',
+    version: 1,
+    generated_at: new Date().toISOString(),
+    settings: {
+      director_style: settings.directorStyle,
+      focus_mode: settings.focusMode,
+      zoom_strength: settings.zoomStrength,
+      transition_ms: profile.transitionMs,
+      min_shot_ms: profile.minShotMs,
+      threshold: profile.threshold,
+      output_width: outputSize.width,
+      output_height: outputSize.height,
+      disabled
+    },
+    segments: candidates.map((segment) => ({
+      id: segment.id,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      durationMs: segment.endMs - segment.startMs,
+      x: segment.x,
+      y: segment.y,
+      scale: segment.scale,
+      cue: segment.cue,
+      confidence: segment.confidence,
+      score: segment.score,
+      reason: segment.reason,
+      source: segment.source,
+      sourceCount: segment.sourceCount,
+      editable: segment.editable
+    })),
+    keyframes,
+    qa,
+    stats: {
+      ...qa.stats,
+      sourceEvents: attentionTimeline.events.length,
+      durationMs
+    }
+  };
+}
+
+function smoothstep(t) {
+  const safe = clamp01(t);
+  return safe * safe * (3 - 2 * safe);
+}
+
+function cameraFrameAt(cameraPlan, atMs) {
+  const keyframes = cameraPlan && Array.isArray(cameraPlan.keyframes)
+    ? cameraPlan.keyframes
+    : [];
+  if (keyframes.length === 0) {
+    return null;
+  }
+
+  if (keyframes.length === 1 || atMs <= keyframes[0].atMs) {
+    return {
+      x: keyframes[0].x,
+      y: keyframes[0].y,
+      scale: keyframes[0].scale
+    };
+  }
+
+  for (let index = 1; index < keyframes.length; index += 1) {
+    const before = keyframes[index - 1];
+    const after = keyframes[index];
+    if (atMs > after.atMs) {
+      continue;
+    }
+
+    const span = Math.max(1, after.atMs - before.atMs);
+    const amount = smoothstep((atMs - before.atMs) / span);
+    return {
+      x: lerp(before.x, after.x, amount),
+      y: lerp(before.y, after.y, amount),
+      scale: lerp(before.scale, after.scale, amount)
+    };
+  }
+
+  const last = keyframes[keyframes.length - 1];
+  return {
+    x: last.x,
+    y: last.y,
+    scale: last.scale
+  };
+}
+
 function drawSmartTimelineFrame(settings, timelinePlan, atMs) {
   const sample = timelineSampleAt(timelinePlan.timeline, atMs);
+  const cameraFrame = cameraFrameAt(timelinePlan.cameraPlan, atMs) || sample.frame;
 
   state.renderContext = { atMs };
-  state.frame = { ...sample.frame };
+  state.frame = { ...cameraFrame };
   state.pointer = {
     ...state.pointer,
     x: sample.pointer.x,
@@ -3099,6 +3601,7 @@ function buildRecordingMetadata({
       privacyRegion: settings.privacyRegion,
       privacyStrength: settings.privacyStrength,
       focusMode: settings.focusMode,
+      directorStyle: settings.directorStyle,
       zoomStrength: settings.zoomStrength,
       motionSensitivity: settings.motionSensitivity,
       smoothing: settings.smoothing
@@ -3485,12 +3988,16 @@ async function saveRecording() {
     timelineSampleCount: timelinePlan.timeline.length
   });
   const attentionTimeline = buildAttentionTimeline(timelinePlan, finalOutputSize);
-  metadata.integrations = {
-    vex: {
-      bundleSchema: 'smartie.recording_bundle.v1',
-      attentionTimelineSchema: attentionTimeline.schema,
-      attentionEventCount: attentionTimeline.events.length
-    }
+  const cameraPlan = compileSmartDirectorPlan(timelinePlan, attentionTimeline, finalOutputSize);
+  timelinePlan.cameraPlan = cameraPlan;
+  metadata.director = {
+    schema: cameraPlan.schema,
+    style: settings.directorStyle,
+    segmentCount: cameraPlan.segments.length,
+    keyframeCount: cameraPlan.keyframes.length,
+    attentionEventCount: attentionTimeline.events.length,
+    qa: cameraPlan.qa,
+    stats: cameraPlan.stats
   };
 
   cleanupRecording();
@@ -3525,6 +4032,7 @@ async function saveRecording() {
       outputDir: settings.outputDir,
       metadata,
       attentionTimeline,
+      cameraPlan,
       exportFormat: settings.exportFormat
     });
 
@@ -3534,22 +4042,25 @@ async function saveRecording() {
     }
 
     state.lastRecordingPath = result.filePath;
+    state.lastSmartProjectPath = result.projectPath || null;
+    state.lastCameraPlan = cameraPlan;
     rememberRecording({
       filePath: result.filePath,
       metadataPath: result.metadataPath,
       chaptersPath: result.chaptersPath,
       mp4Path: result.mp4Path,
-      bundlePath: result.bundlePath,
+      projectPath: result.projectPath,
       sourceName: state.selectedSource ? state.selectedSource.name : null,
       takeTitle: settings.takeTitle,
       durationMs,
       markers,
       createdAt: new Date().toISOString()
     });
-    if (result.bundleError) {
-      setStatus(result.mp4Path ? 'Saved + MP4 (bundle failed)' : 'Saved (bundle failed)');
-    } else if (result.bundlePath) {
-      setStatus(result.mp4Path ? 'Saved + MP4 + Vex bundle' : 'Saved + Vex bundle');
+    renderDirectorPlan(cameraPlan);
+    if (result.projectError) {
+      setStatus(result.mp4Path ? 'Saved + MP4 (project failed)' : 'Saved (project failed)');
+    } else if (result.projectPath) {
+      setStatus(result.mp4Path ? 'Saved + MP4 + Smartie project' : 'Saved + Smartie project');
     } else {
       setStatus(result.mp4Path ? 'Saved + MP4' : 'Saved');
     }
@@ -3609,6 +4120,7 @@ elements.captureSnapshot.addEventListener('click', captureSnapshot);
 elements.stopRecording.addEventListener('click', stopRecording);
 elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
+elements.revealProject.addEventListener('click', () => window.smartie.revealFile(state.lastSmartProjectPath));
 elements.chooseOutputFolder.addEventListener('click', chooseOutputFolder);
 elements.clearRecent.addEventListener('click', clearRecentRecordings);
 elements.micMute.addEventListener('click', toggleMicMute);
@@ -3663,6 +4175,7 @@ for (const input of [
   elements.saveMode,
   elements.exportFormat,
   elements.focusMode,
+  elements.directorStyle,
   elements.zoomStrength,
   elements.motionSensitivity,
   elements.smoothing,
@@ -3705,6 +4218,7 @@ window.addEventListener('click', (event) => {
 loadPersistedSettings();
 loadRecentRecordings();
 renderRecentRecordings();
+renderDirectorPlan();
 resizeCanvasForProfile();
 drawWaitingFrame();
 renderHealth();

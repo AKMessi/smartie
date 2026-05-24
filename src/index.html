@@ -285,6 +285,15 @@
             </select>
           </label>
 
+          <label class="field">
+            <span>Director style</span>
+            <select id="directorStyle">
+              <option value="balanced" selected>Balanced</option>
+              <option value="subtle">Subtle</option>
+              <option value="cinematic">Cinematic</option>
+            </select>
+          </label>
+
           <div class="field">
             <span>Focus lock</span>
             <div class="button-row">
@@ -328,6 +337,15 @@
             <input id="privacyStrength" type="range" min="6" max="28" step="1" value="16">
             <output id="privacyStrengthValue">16px</output>
           </label>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <h2>Director Plan</h2>
+            <button id="revealProject" type="button" class="mini-button" disabled>Reveal</button>
+          </div>
+          <output id="directorPlanStatus" class="plan-status">No rendered plan yet.</output>
+          <div id="directorPlanList" class="director-plan-list"></div>
         </section>
       </aside>
     </main>

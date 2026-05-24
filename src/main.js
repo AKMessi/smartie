@@ -209,10 +209,10 @@ function chapterPathFor(videoPath) {
   return `${base}.chapters.vtt`;
 }
 
-function smartieBundlePathFor(videoPath) {
+function smartieProjectPathFor(videoPath) {
   const extension = path.extname(videoPath);
   const base = extension ? videoPath.slice(0, -extension.length) : videoPath;
-  return `${base}.smartie-bundle`;
+  return `${base}.smartie-project`;
 }
 
 function mp4PathFor(videoPath) {
@@ -290,7 +290,24 @@ function normalizeAttentionTimeline(attentionTimeline) {
   };
 }
 
-function buildSmartieBundleManifest(filePath, metadata, attentionTimeline, recordingFileName, bundleFileMode) {
+function normalizeCameraPlan(cameraPlan) {
+  const payload = cameraPlan && typeof cameraPlan === 'object'
+    ? cameraPlan
+    : {};
+
+  return {
+    schema: typeof payload.schema === 'string' ? payload.schema : 'smartie.camera_plan.v1',
+    version: finiteNumber(payload.version, 1),
+    generated_at: typeof payload.generated_at === 'string' ? payload.generated_at : new Date().toISOString(),
+    settings: payload.settings && typeof payload.settings === 'object' ? payload.settings : {},
+    segments: Array.isArray(payload.segments) ? payload.segments : [],
+    keyframes: Array.isArray(payload.keyframes) ? payload.keyframes : [],
+    qa: payload.qa && typeof payload.qa === 'object' ? payload.qa : {},
+    stats: payload.stats && typeof payload.stats === 'object' ? payload.stats : {}
+  };
+}
+
+function buildSmartieProjectManifest(filePath, metadata, attentionTimeline, cameraPlan, recordingFileName, projectFileMode) {
   const capture = metadata?.capture || {};
   const title = metadata?.take?.title || path.basename(filePath, path.extname(filePath));
   const durationMs = finiteNumber(metadata?.durationMs, null);
@@ -299,7 +316,7 @@ function buildSmartieBundleManifest(filePath, metadata, attentionTimeline, recor
   const fps = finiteNumber(capture.fps, finiteNumber(capture.requestedFps, null));
 
   return {
-    schema: 'smartie.recording_bundle.v1',
+    schema: 'smartie.project.v1',
     app: APP_TITLE,
     title,
     created_at: metadata?.createdAt || new Date().toISOString(),
@@ -312,6 +329,7 @@ function buildSmartieBundleManifest(filePath, metadata, attentionTimeline, recor
     files: {
       recording: recordingFileName,
       attention_timeline: 'attention.timeline.json',
+      camera_plan: 'camera.plan.json',
       metadata: 'recording.smartie.json'
     },
     smartie: {
@@ -326,7 +344,13 @@ function buildSmartieBundleManifest(filePath, metadata, attentionTimeline, recor
       schema: attentionTimeline.schema,
       events: Array.isArray(attentionTimeline.events) ? attentionTimeline.events.length : 0
     },
-    bundle_file_mode: bundleFileMode
+    camera_plan: {
+      schema: cameraPlan.schema,
+      segments: Array.isArray(cameraPlan.segments) ? cameraPlan.segments.length : 0,
+      keyframes: Array.isArray(cameraPlan.keyframes) ? cameraPlan.keyframes.length : 0,
+      qa: cameraPlan.qa || {}
+    },
+    project_file_mode: projectFileMode
   };
 }
 
@@ -342,38 +366,43 @@ async function linkOrCopyRecording(sourcePath, targetPath) {
   }
 }
 
-async function writeSmartieBundle(filePath, metadata, attentionTimeline) {
-  const bundlePath = smartieBundlePathFor(filePath);
+async function writeSmartieProject(filePath, metadata, attentionTimeline, cameraPlan) {
+  const projectPath = smartieProjectPathFor(filePath);
   const recordingExtension = path.extname(filePath) || '.webm';
   const recordingFileName = `recording${recordingExtension}`;
-  const bundleRecordingPath = path.join(bundlePath, recordingFileName);
+  const projectRecordingPath = path.join(projectPath, recordingFileName);
   const normalizedTimeline = normalizeAttentionTimeline(attentionTimeline);
+  const normalizedCameraPlan = normalizeCameraPlan(cameraPlan);
 
-  await fs.mkdir(bundlePath, { recursive: true });
-  const bundleFileMode = await linkOrCopyRecording(filePath, bundleRecordingPath);
-  const manifest = buildSmartieBundleManifest(
+  await fs.mkdir(projectPath, { recursive: true });
+  const projectFileMode = await linkOrCopyRecording(filePath, projectRecordingPath);
+  const manifest = buildSmartieProjectManifest(
     filePath,
     metadata,
     normalizedTimeline,
+    normalizedCameraPlan,
     recordingFileName,
-    bundleFileMode
+    projectFileMode
   );
 
-  const manifestPath = path.join(bundlePath, 'manifest.json');
-  const attentionTimelinePath = path.join(bundlePath, 'attention.timeline.json');
-  const bundleMetadataPath = path.join(bundlePath, 'recording.smartie.json');
+  const manifestPath = path.join(projectPath, 'manifest.json');
+  const attentionTimelinePath = path.join(projectPath, 'attention.timeline.json');
+  const cameraPlanPath = path.join(projectPath, 'camera.plan.json');
+  const projectMetadataPath = path.join(projectPath, 'recording.smartie.json');
 
   await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   await fs.writeFile(attentionTimelinePath, `${JSON.stringify(normalizedTimeline, null, 2)}\n`, 'utf8');
-  await fs.writeFile(bundleMetadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
+  await fs.writeFile(cameraPlanPath, `${JSON.stringify(normalizedCameraPlan, null, 2)}\n`, 'utf8');
+  await fs.writeFile(projectMetadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
 
   return {
-    bundlePath,
+    projectPath,
     manifestPath,
     attentionTimelinePath,
-    bundleMetadataPath,
-    bundleRecordingPath,
-    bundleFileMode
+    cameraPlanPath,
+    projectMetadataPath,
+    projectRecordingPath,
+    projectFileMode
   };
 }
 
@@ -468,7 +497,7 @@ function muxAudioIntoWebm(videoPath, audioSourcePath, outputPath) {
   });
 }
 
-async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm', audioSourceBytes = null, attentionTimeline = null) {
+async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm', audioSourceBytes = null, attentionTimeline = null, cameraPlan = null) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   if (audioSourceBytes) {
     const tempBase = `${filePath}.${Date.now()}`;
@@ -492,8 +521,8 @@ async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'we
       metadataPath: null,
       chaptersPath: null,
       mp4Path: null,
-      bundlePath: null,
-      bundleError: null
+      projectPath: null,
+      projectError: null
     };
   }
 
@@ -512,13 +541,13 @@ async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'we
     await transcodeToMp4(filePath, mp4Path);
   }
 
-  let bundle = null;
-  let bundleError = null;
+  let project = null;
+  let projectError = null;
   try {
-    bundle = await writeSmartieBundle(filePath, metadata, attentionTimeline);
+    project = await writeSmartieProject(filePath, metadata, attentionTimeline, cameraPlan);
   } catch (error) {
-    bundleError = error.message || 'Could not write Smartie bundle.';
-    console.warn('Could not write Smartie bundle.', error);
+    projectError = error.message || 'Could not write Smartie project.';
+    console.warn('Could not write Smartie project.', error);
   }
 
   return {
@@ -526,12 +555,13 @@ async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'we
     metadataPath,
     chaptersPath: chapters ? chaptersPath : null,
     mp4Path,
-    bundlePath: bundle ? bundle.bundlePath : null,
-    bundleManifestPath: bundle ? bundle.manifestPath : null,
-    attentionTimelinePath: bundle ? bundle.attentionTimelinePath : null,
-    bundleRecordingPath: bundle ? bundle.bundleRecordingPath : null,
-    bundleFileMode: bundle ? bundle.bundleFileMode : null,
-    bundleError
+    projectPath: project ? project.projectPath : null,
+    projectManifestPath: project ? project.manifestPath : null,
+    attentionTimelinePath: project ? project.attentionTimelinePath : null,
+    cameraPlanPath: project ? project.cameraPlanPath : null,
+    projectRecordingPath: project ? project.projectRecordingPath : null,
+    projectFileMode: project ? project.projectFileMode : null,
+    projectError
   };
 }
 
@@ -563,7 +593,7 @@ ipcMain.handle('smartie:get-pointer', () => ({
 }));
 
 ipcMain.handle('smartie:save-recording', async (_event, payload) => {
-  const { bytes, audioSourceBytes, suggestedName, saveMode, outputDir, metadata, exportFormat, attentionTimeline } = payload || {};
+  const { bytes, audioSourceBytes, suggestedName, saveMode, outputDir, metadata, exportFormat, attentionTimeline, cameraPlan } = payload || {};
   if (!bytes) {
     throw new Error('No recording data received.');
   }
@@ -571,7 +601,7 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
   if (saveMode === 'auto') {
     const directory = outputDir || defaultRecordingDirectory();
     const filePath = path.join(directory, suggestedName || path.basename(defaultRecordingPath()));
-    const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline);
+    const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan);
     return {
       canceled: false,
       ...saved
@@ -597,7 +627,7 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
     return { canceled: true };
   }
 
-  const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline);
+  const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan);
   return {
     canceled: false,
     ...saved

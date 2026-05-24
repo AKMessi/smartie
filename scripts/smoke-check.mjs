@@ -82,6 +82,7 @@ for (const feature of [
   'recentRecordings',
   'rememberRecording',
   'renderRecentRecordings',
+  'renderDirectorPlan',
   'updateFrameHealth',
   'renderHealth',
   'micGain',
@@ -96,6 +97,7 @@ for (const feature of [
   'toggleMicMute',
   'startMicMeter',
   'focusMode',
+  'directorStyle',
   'setFocusLock',
   'toggleFocusLock',
   'director',
@@ -151,8 +153,18 @@ for (const feature of [
   'buildTimelineAttentionEvent',
   'attentionCue',
   'shouldKeepAttentionEvent',
+  'compileSmartDirectorPlan',
+  'directorStyleProfile',
+  'directorCandidateFromEvent',
+  'mergeDirectorCandidates',
+  'resolveDirectorOverlaps',
+  'buildCameraKeyframes',
+  'validateCameraPlan',
+  'cameraFrameAt',
+  'smartie.camera_plan.v1',
   'audioSourceBytes',
   'attentionTimeline',
+  'cameraPlan',
   'recordingMimeType',
   'recordingSettings',
   'createRecordingCanvasStream',
@@ -168,7 +180,7 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieBundle', 'smartieBundlePathFor', 'attention.timeline.json', 'bundleFileMode']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieProject', 'smartieProjectPathFor', 'smartie.project.v1', 'attention.timeline.json', 'camera.plan.json', 'projectFileMode']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }
