@@ -132,6 +132,17 @@ for (const feature of [
   'smoothRecording',
   'performanceMode',
   'performanceProfile',
+  'prepareRecordingSettings',
+  'performanceResolvedMode',
+  'performanceGovernor',
+  'hydratePerformanceProfile',
+  'resetPerformanceGovernor',
+  'observePerformanceHealth',
+  'boundedPush',
+  'createRecordingChunkSession',
+  'queueRecordingChunk',
+  'finalizeRecordingChunkSession',
+  'discardRecordingChunkSession',
   'capCanvasSize',
   'lowLatencyMode',
   'recordingEngine',
@@ -175,7 +186,7 @@ for (const feature of [
   'smartie.camera_plan.v1',
   'smartie.cursor_timeline.v1',
   'smartie.render_qa.v1',
-  'audioSourceBytes',
+  'audioSourceSessionId',
   'attentionTimeline',
   'cameraPlan',
   'projectArtifacts',
@@ -194,14 +205,14 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieProject', 'smartieProjectPathFor', 'smartie.project.v1', 'attention.timeline.json', 'cursor.timeline.json', 'click.timeline.json', 'keyboard.timeline.json', 'motion.timeline.json', 'accessibility.timeline.json', 'proxy.timeline.json', 'camera.plan.json', 'render.qa.json', 'projectFileMode', 'getActiveWindowSnapshot', 'createProxyPreview', 'save-camera-plan']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieProject', 'smartieProjectPathFor', 'smartie.project.v1', 'attention.timeline.json', 'cursor.timeline.json', 'click.timeline.json', 'keyboard.timeline.json', 'motion.timeline.json', 'accessibility.timeline.json', 'proxy.timeline.json', 'camera.plan.json', 'render.qa.json', 'projectFileMode', 'getActiveWindowSnapshot', 'createProxyPreview', 'save-camera-plan', 'get-performance-profile', 'create-recording-session', 'append-recording-chunk', 'finalize-recording-session', 'read-recording-session', 'discard-recording-session', 'classifyPerformanceProfile', 'recordingSessions', 'materializeRecordingInput']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }
 }
 
 const preload = readFileSync(join(root, 'src/preload.js'), 'utf8');
-for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir', 'setWindowHidden', 'toggleWindowVisibility', 'saveSnapshot', 'getSemanticContext', 'saveCameraPlan']) {
+for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir', 'setWindowHidden', 'toggleWindowVisibility', 'saveSnapshot', 'getSemanticContext', 'saveCameraPlan', 'getPerformanceProfile', 'createRecordingSession', 'appendRecordingChunk', 'finalizeRecordingSession', 'readRecordingSession', 'discardRecordingSession']) {
   if (!preload.includes(feature)) {
     throw new Error(`Preload is missing shortcut bridge: ${feature}`);
   }

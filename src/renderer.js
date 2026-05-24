@@ -44,6 +44,7 @@ const elements = {
   fpsValue: document.querySelector('#fpsValue'),
   smoothRecording: document.querySelector('#smoothRecording'),
   performanceMode: document.querySelector('#performanceMode'),
+  performanceProfile: document.querySelector('#performanceProfile'),
   recordingEngine: document.querySelector('#recordingEngine'),
   takeTitle: document.querySelector('#takeTitle'),
   titleDuration: document.querySelector('#titleDuration'),
@@ -106,6 +107,11 @@ const state = {
   canvasStream: null,
   canvasVideoTrack: null,
   mediaRecorder: null,
+  recordingSessionId: null,
+  recordingSessionInfo: null,
+  chunkWriteQueue: Promise.resolve(),
+  chunkWriteError: null,
+  chunkSequence: 0,
   recordingMimeType: null,
   recordedVideoSize: null,
   recordingSettings: null,
@@ -205,6 +211,14 @@ const state = {
     lastFrameAt: 0,
     fps: 0,
     droppedFrames: 0
+  },
+  performance: {
+    systemProfile: null,
+    activeMode: 'balanced',
+    adaptiveLevel: 0,
+    lastAdaptAt: 0,
+    lastDropCount: 0,
+    lastStatus: ''
   }
 };
 
@@ -227,22 +241,121 @@ const qualityProfiles = {
 };
 
 const performanceProfiles = {
+  potato: {
+    label: 'Potato saver',
+    shortSide: 540,
+    captureShortSide: 720,
+    bitrateScale: 0.38,
+    maxFps: 24,
+    previewFps: 5,
+    smartTimelineFps: 8,
+    pointerPollMs: 80,
+    cursorSampleMs: 220,
+    cursorStillSampleMs: 900,
+    semanticPollMs: 3200,
+    motionScanMs: 1400,
+    motionWidth: 36,
+    motionHeight: 20,
+    maxCursorSamples: 5000,
+    maxTimelineSamples: 3600,
+    maxTrailSamples: 1200,
+    maxPulseSamples: 900,
+    maxKeyboardEvents: 1200,
+    maxMotionEvents: 900,
+    maxAccessibilityEvents: 240,
+    forceHybridFromLive: true,
+    downgradeQuality: 'balanced',
+    cameraWidth: 640,
+    cameraHeight: 360,
+    cameraFps: 15
+  },
   ultra: {
+    label: 'Ultra smooth',
     shortSide: 720,
+    captureShortSide: 900,
     bitrateScale: 0.58,
-    motionScanMs: 420
+    maxFps: 30,
+    previewFps: 8,
+    smartTimelineFps: 12,
+    pointerPollMs: 50,
+    cursorSampleMs: 150,
+    cursorStillSampleMs: 620,
+    semanticPollMs: 2200,
+    motionScanMs: 760,
+    motionWidth: 48,
+    motionHeight: 27,
+    maxCursorSamples: 9000,
+    maxTimelineSamples: 5400,
+    maxTrailSamples: 2200,
+    maxPulseSamples: 1400,
+    maxKeyboardEvents: 1800,
+    maxMotionEvents: 1400,
+    maxAccessibilityEvents: 420,
+    forceHybridFromLive: true,
+    downgradeQuality: null,
+    cameraWidth: 854,
+    cameraHeight: 480,
+    cameraFps: 24
   },
   balanced: {
+    label: 'Balanced',
     shortSide: 900,
+    captureShortSide: 1080,
     bitrateScale: 0.74,
-    motionScanMs: 300
+    maxFps: 60,
+    previewFps: 12,
+    smartTimelineFps: 18,
+    pointerPollMs: 42,
+    cursorSampleMs: 110,
+    cursorStillSampleMs: 420,
+    semanticPollMs: 1400,
+    motionScanMs: 460,
+    motionWidth: 60,
+    motionHeight: 34,
+    maxCursorSamples: 15000,
+    maxTimelineSamples: 9000,
+    maxTrailSamples: 3600,
+    maxPulseSamples: 2200,
+    maxKeyboardEvents: 2600,
+    maxMotionEvents: 2200,
+    maxAccessibilityEvents: 720,
+    forceHybridFromLive: false,
+    downgradeQuality: null,
+    cameraWidth: 960,
+    cameraHeight: 540,
+    cameraFps: 30
   },
   quality: {
+    label: 'Max quality',
     shortSide: Infinity,
+    captureShortSide: Infinity,
     bitrateScale: 1,
-    motionScanMs: 180
+    maxFps: 60,
+    previewFps: 24,
+    smartTimelineFps: 30,
+    pointerPollMs: 33,
+    cursorSampleMs: 70,
+    cursorStillSampleMs: 260,
+    semanticPollMs: 1000,
+    motionScanMs: 220,
+    motionWidth: 72,
+    motionHeight: 40,
+    maxCursorSamples: 24000,
+    maxTimelineSamples: 18000,
+    maxTrailSamples: 5200,
+    maxPulseSamples: 3200,
+    maxKeyboardEvents: 4200,
+    maxMotionEvents: 4200,
+    maxAccessibilityEvents: 1200,
+    forceHybridFromLive: false,
+    downgradeQuality: null,
+    cameraWidth: 1280,
+    cameraHeight: 720,
+    cameraFps: 30
   }
 };
+
+const performanceDemotionOrder = ['quality', 'balanced', 'ultra', 'potato'];
 
 const persistedSettingKeys = [
   'smartMaster',
@@ -453,16 +566,107 @@ function canvasSizeForSettings(settings = getSettings()) {
   return capCanvasSize(size, performanceShortSide(settings));
 }
 
-function performanceProfile(settings = getSettings()) {
-  if (!settings.smoothRecording || usesHybridSmartRender(settings)) {
-    return performanceProfiles.quality;
+function normalizedPerformanceMode(mode) {
+  return performanceProfiles[mode] ? mode : 'balanced';
+}
+
+function recommendedPerformanceMode() {
+  return normalizedPerformanceMode(state.performance.systemProfile?.recommendedMode || 'balanced');
+}
+
+function explicitPerformanceMode(settings = getSettings()) {
+  return settings.performanceResolvedMode
+    || (settings.performanceMode === 'auto' ? recommendedPerformanceMode() : normalizedPerformanceMode(settings.performanceMode));
+}
+
+function demotePerformanceMode(mode, levels = 0) {
+  const normalized = normalizedPerformanceMode(mode);
+  const index = performanceDemotionOrder.indexOf(normalized);
+  if (index === -1) {
+    return normalized;
   }
 
-  return performanceProfiles[settings.performanceMode] || performanceProfiles.ultra;
+  return performanceDemotionOrder[Math.min(performanceDemotionOrder.length - 1, index + Math.max(0, levels))];
+}
+
+function activePerformanceMode(settings = getSettings()) {
+  const requested = explicitPerformanceMode(settings);
+  const adaptiveLevel = state.recording ? state.performance.adaptiveLevel : 0;
+  return demotePerformanceMode(requested, adaptiveLevel);
+}
+
+function performanceProfile(settings = getSettings()) {
+  return performanceProfiles[activePerformanceMode(settings)] || performanceProfiles.balanced;
 }
 
 function performanceShortSide(settings = getSettings()) {
   return performanceProfile(settings).shortSide;
+}
+
+function performanceCaptureShortSide(settings = getSettings()) {
+  return performanceProfile(settings).captureShortSide;
+}
+
+function performanceSummaryLabel(settings = getSettings()) {
+  const profile = performanceProfile(settings);
+  const requested = settings.performanceMode === 'auto'
+    ? `Auto -> ${profile.label}`
+    : profile.label;
+  const tier = state.performance.systemProfile?.tier || 'profiling';
+  const caps = [];
+  if (Number.isFinite(profile.captureShortSide)) {
+    caps.push(`${profile.captureShortSide}p cap`);
+  }
+  caps.push(`${profile.maxFps} fps max`);
+
+  return `${requested} - ${tier} system - ${caps.join(', ')}`;
+}
+
+function boundedPush(array, value, maxItems) {
+  array.push(value);
+  if (array.length > maxItems) {
+    array.splice(0, array.length - maxItems);
+  }
+}
+
+function prepareRecordingSettings(rawSettings) {
+  const settings = { ...rawSettings };
+  const resolvedMode = explicitPerformanceMode(settings);
+  const profile = performanceProfiles[resolvedMode] || performanceProfiles.balanced;
+  const notes = [];
+
+  settings.performanceResolvedMode = resolvedMode;
+  settings.performanceTier = state.performance.systemProfile?.tier || 'unknown';
+  settings.fps = Math.min(Number(settings.fps) || 30, profile.maxFps);
+
+  if (profile.downgradeQuality && qualityProfiles[settings.quality]?.height > qualityProfiles[profile.downgradeQuality].height) {
+    settings.requestedQuality = settings.quality;
+    settings.quality = profile.downgradeQuality;
+    notes.push(`quality capped to ${profile.downgradeQuality}`);
+  }
+
+  if (profile.forceHybridFromLive && usesSmartCanvasRecording(settings)) {
+    settings.requestedRecordingEngine = settings.recordingEngine;
+    settings.recordingEngine = settings.smartMaster ? 'hybrid' : 'native';
+    notes.push('live canvas recording moved to deferred smart render');
+  }
+
+  settings.performanceGovernor = {
+    mode: resolvedMode,
+    label: profile.label,
+    tier: settings.performanceTier,
+    notes,
+    caps: {
+      fps: profile.maxFps,
+      captureShortSide: Number.isFinite(profile.captureShortSide) ? profile.captureShortSide : null,
+      renderShortSide: Number.isFinite(profile.shortSide) ? profile.shortSide : null,
+      bitrateScale: profile.bitrateScale,
+      pointerPollMs: profile.pointerPollMs,
+      smartTimelineFps: profile.smartTimelineFps
+    }
+  };
+
+  return settings;
 }
 
 function capCanvasSize(size, maxShortSide) {
@@ -484,7 +688,8 @@ function capCanvasSize(size, maxShortSide) {
 }
 
 function lowLatencyMode(settings = getSettings()) {
-  return settings.smoothRecording && usesSmartCanvasRecording(settings) && settings.performanceMode === 'ultra';
+  const mode = activePerformanceMode(settings);
+  return settings.smoothRecording && usesSmartCanvasRecording(settings) && (mode === 'ultra' || mode === 'potato');
 }
 
 function usesSmartCanvasRecording(settings = getSettings()) {
@@ -505,28 +710,24 @@ function outputLayoutForRecording(settings = getSettings()) {
 
 function effectiveRecordingFps(settings = getSettings()) {
   const requestedFps = Number(settings.fps) || 30;
+  const cappedFps = Math.min(requestedFps, performanceProfile(settings).maxFps);
   return settings.smoothRecording && usesSmartCanvasRecording(settings)
-    ? Math.min(requestedFps, 30)
-    : requestedFps;
+    ? Math.min(cappedFps, 30)
+    : cappedFps;
 }
 
 function effectiveDrawFps(settings = getSettings()) {
   if (!usesSmartCanvasRecording(settings) && settings.smoothRecording) {
-    return 15;
+    return Math.min(performanceProfile(settings).previewFps, effectiveRecordingFps(settings));
   }
 
-  return effectiveRecordingFps(settings);
+  return Math.min(effectiveRecordingFps(settings), performanceProfile(settings).previewFps || effectiveRecordingFps(settings));
 }
 
 function recordingBitrate(settings = getSettings()) {
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
-  if (!usesSmartCanvasRecording(settings)) {
-    return profile.bitsPerSecond;
-  }
-
-  return settings.smoothRecording
-    ? Math.round(profile.bitsPerSecond * performanceProfile(settings).bitrateScale)
-    : profile.bitsPerSecond;
+  const scale = settings.smoothRecording ? performanceProfile(settings).bitrateScale : 1;
+  return Math.round(profile.bitsPerSecond * scale);
 }
 
 function renderRecentRecordings() {
@@ -922,7 +1123,8 @@ function renderHealth() {
 
   const settings = state.recordingSettings || getSettings();
   if (!usesSmartCanvasRecording(settings)) {
-    elements.healthText.textContent = usesHybridSmartRender(settings) ? 'Smartie' : 'Native';
+    const mode = activePerformanceMode(settings);
+    elements.healthText.textContent = usesHybridSmartRender(settings) ? `Smartie ${mode}` : `Native ${mode}`;
     elements.healthText.classList.add('good');
     return;
   }
@@ -957,8 +1159,37 @@ function updateFrameHealth(now, targetFps) {
     state.health.fps = Math.round((state.health.framesThisSecond * 1000) / (now - state.health.lastSampleAt));
     state.health.framesThisSecond = 0;
     state.health.lastSampleAt = now;
+    observePerformanceHealth(now, targetFps);
     renderHealth();
   }
+}
+
+function resetPerformanceGovernor() {
+  state.performance.adaptiveLevel = 0;
+  state.performance.lastAdaptAt = 0;
+  state.performance.lastDropCount = 0;
+  state.performance.lastStatus = '';
+}
+
+function observePerformanceHealth(now, targetFps) {
+  if (!state.recording || state.paused || !usesSmartCanvasRecording(state.recordingSettings || getSettings())) {
+    return;
+  }
+
+  const fpsRatio = targetFps > 0 ? state.health.fps / targetFps : 1;
+  const newDrops = state.health.droppedFrames - state.performance.lastDropCount;
+  const overloaded = fpsRatio < 0.68 || newDrops >= 3;
+  const canAdapt = now - state.performance.lastAdaptAt > 3500;
+  if (!overloaded || !canAdapt || state.performance.adaptiveLevel >= performanceDemotionOrder.length - 1) {
+    state.performance.lastDropCount = state.health.droppedFrames;
+    return;
+  }
+
+  state.performance.adaptiveLevel += 1;
+  state.performance.lastAdaptAt = now;
+  state.performance.lastDropCount = state.health.droppedFrames;
+  state.performance.lastStatus = `adaptive level ${state.performance.adaptiveLevel}`;
+  setStatus(`Optimizing recording load (${performanceProfile(state.recordingSettings || getSettings()).label})`);
 }
 
 function syncControls() {
@@ -1010,7 +1241,10 @@ function syncControls() {
       ? `${settings.fps} fps`
       : `${settings.fps} fps (${effectiveFps} effective)`;
   }
-  elements.performanceMode.disabled = state.recording || !settings.smoothRecording || !usesSmartCanvasRecording(settings);
+  elements.performanceMode.disabled = state.recording || !settings.smoothRecording;
+  if (elements.performanceProfile) {
+    elements.performanceProfile.textContent = performanceSummaryLabel(settings);
+  }
   elements.micGainValue.textContent = `${Math.round(Number(elements.micGain.value) * 100)}%`;
   elements.noiseGateThresholdValue.textContent = `${Math.round(Number(elements.noiseGateThreshold.value) * 100)}%`;
   elements.zoomStrengthValue.textContent = `${Number(elements.zoomStrength.value).toFixed(1)}x`;
@@ -1241,11 +1475,11 @@ function pushSmartPulse(x = state.pointer.x, y = state.pointer.y) {
   };
 
   if (state.recording && !state.paused && usesHybridSmartRender(state.recordingSettings || getSettings())) {
-    state.smartPulses.push({
+    boundedPush(state.smartPulses, {
       atMs: recordingElapsedMs(),
       x,
       y
-    });
+    }, performanceProfile(state.recordingSettings || getSettings()).maxPulseSamples);
   }
 
   recordClickTelemetry('pulse', x, y, 0.92, 'click pulse');
@@ -1398,14 +1632,17 @@ function recordCursorTelemetry(x, y, velocity, atMs, pointerPayload) {
     return;
   }
 
+  const settings = state.recordingSettings || getSettings();
+  const profile = performanceProfile(settings);
   const elapsedSinceSample = atMs - state.telemetry.lastCursorSampleAt;
   const movedEnough = velocity > 0.0018;
-  if (!movedEnough && elapsedSinceSample < 260) {
+  const sampleMs = movedEnough ? profile.cursorSampleMs : profile.cursorStillSampleMs;
+  if (elapsedSinceSample < sampleMs) {
     return;
   }
 
   state.telemetry.lastCursorSampleAt = atMs;
-  state.telemetry.cursor.push({
+  boundedPush(state.telemetry.cursor, {
     time: roundTo(atMs / 1000, 3),
     time_ms: Math.round(atMs),
     x: roundTo(x, 5),
@@ -1413,7 +1650,7 @@ function recordCursorTelemetry(x, y, velocity, atMs, pointerPayload) {
     screen_x: Math.round(pointerPayload.point.x),
     screen_y: Math.round(pointerPayload.point.y),
     velocity: roundTo(velocity, 5)
-  });
+  }, profile.maxCursorSamples);
 }
 
 function recordClickTelemetry(kind, x = state.pointer.x, y = state.pointer.y, confidence = 0.88, reason = kind) {
@@ -1422,7 +1659,7 @@ function recordClickTelemetry(kind, x = state.pointer.x, y = state.pointer.y, co
   }
 
   const atMs = recordingElapsedMs();
-  state.telemetry.clicks.push({
+  boundedPush(state.telemetry.clicks, {
     time: roundTo(atMs / 1000, 3),
     time_ms: Math.round(atMs),
     x: roundTo(clamp01(x), 5),
@@ -1430,7 +1667,7 @@ function recordClickTelemetry(kind, x = state.pointer.x, y = state.pointer.y, co
     type: kind,
     confidence: roundTo(clamp01(confidence), 3),
     reason
-  });
+  }, performanceProfile(state.recordingSettings || getSettings()).maxPulseSamples);
 }
 
 function recordMotionTelemetry() {
@@ -1439,18 +1676,19 @@ function recordMotionTelemetry() {
   }
 
   const atMs = recordingElapsedMs();
-  if (atMs - state.telemetry.lastMotionSampleAt < 420 || state.motionTarget.strength < 0.015) {
+  const profile = performanceProfile(state.recordingSettings || getSettings());
+  if (atMs - state.telemetry.lastMotionSampleAt < profile.motionScanMs || state.motionTarget.strength < 0.015) {
     return;
   }
 
   state.telemetry.lastMotionSampleAt = atMs;
-  state.telemetry.motion.push({
+  boundedPush(state.telemetry.motion, {
     time: roundTo(atMs / 1000, 3),
     time_ms: Math.round(atMs),
     x: roundTo(clamp01(state.motionTarget.x), 5),
     y: roundTo(clamp01(state.motionTarget.y), 5),
     strength: roundTo(clamp01(state.motionTarget.strength), 3)
-  });
+  }, profile.maxMotionEvents);
 }
 
 function mapPointerToCapture(pointerPayload) {
@@ -1488,9 +1726,9 @@ function mapPointerToCapture(pointerPayload) {
       atMs
     });
     if (state.recording && !state.paused && usesHybridSmartRender(state.recordingSettings || settings)) {
-      state.smartTrail.push({ x, y, atMs });
+      boundedPush(state.smartTrail, { x, y, atMs }, performanceProfile(state.recordingSettings || settings).maxTrailSamples);
     }
-    state.trail = state.trail.slice(lowLatencyMode(settings) ? -12 : -28);
+    state.trail = state.trail.slice(lowLatencyMode(settings) ? -12 : -Math.min(28, performanceProfile(settings).maxTrailSamples));
   }
 
   if (velocity > 0.055 && settings.clickPulse) {
@@ -1516,6 +1754,12 @@ function scanMotionTarget(settings, timestamp) {
   }
 
   state.motionTarget.lastScanAt = timestamp;
+  const profile = performanceProfile(settings);
+  if (motionCanvas.width !== profile.motionWidth || motionCanvas.height !== profile.motionHeight) {
+    motionCanvas.width = profile.motionWidth;
+    motionCanvas.height = profile.motionHeight;
+    state.motionTarget.previousFrame = null;
+  }
   motionCtx.drawImage(video, 0, 0, motionCanvas.width, motionCanvas.height);
   const frame = motionCtx.getImageData(0, 0, motionCanvas.width, motionCanvas.height).data;
 
@@ -1565,6 +1809,7 @@ function scanMotionTarget(settings, timestamp) {
 
 function startPointerPolling() {
   stopPointerPolling();
+  const profile = performanceProfile(state.recordingSettings || getSettings());
   state.pointerPollId = window.setInterval(async () => {
     try {
       const payload = await window.smartie.getPointer();
@@ -1573,7 +1818,7 @@ function startPointerPolling() {
     } catch (error) {
       console.error(error);
     }
-  }, 33);
+  }, profile.pointerPollMs);
 }
 
 function stopPointerPolling() {
@@ -1585,6 +1830,8 @@ function stopPointerPolling() {
 
 function startSemanticPolling() {
   stopSemanticPolling();
+  const settings = state.recordingSettings || getSettings();
+  const profile = performanceProfile(settings);
   const capture = async () => {
     if (!state.recording || state.paused || typeof window.smartie.getSemanticContext !== 'function') {
       return;
@@ -1604,7 +1851,7 @@ function startSemanticPolling() {
 
       state.telemetry.lastAccessibilityTitle = title;
       const atMs = recordingElapsedMs();
-      state.telemetry.accessibility.push({
+      boundedPush(state.telemetry.accessibility, {
         time: roundTo(atMs / 1000, 3),
         time_ms: Math.round(atMs),
         provider: activeWindow.provider || null,
@@ -1620,14 +1867,14 @@ function startSemanticPolling() {
               displayId: state.selectedSource.displayId
             }
           : null
-      });
+      }, profile.maxAccessibilityEvents);
     } catch (error) {
       console.warn('Could not capture semantic context.', error);
     }
   };
 
   capture();
-  state.semanticPollId = window.setInterval(capture, 1000);
+  state.semanticPollId = window.setInterval(capture, profile.semanticPollMs);
 }
 
 function stopSemanticPolling() {
@@ -1646,7 +1893,7 @@ function captureSmartTimelineFrame(settings = state.recordingSettings || getSett
   scanMotionTarget(settings, timestamp);
   easeFrame(settings);
   const attention = state.attention.active || {};
-  state.smartTimeline.push({
+  boundedPush(state.smartTimeline, {
     atMs: recordingElapsedMs(),
     frame: {
       scale: state.frame.scale,
@@ -1667,7 +1914,7 @@ function captureSmartTimelineFrame(settings = state.recordingSettings || getSett
       y: state.pointer.y
     },
     keys: state.keys.slice(-4)
-  });
+  }, performanceProfile(settings).maxTimelineSamples);
 }
 
 function startSmartTimeline(settings) {
@@ -1677,7 +1924,7 @@ function startSmartTimeline(settings) {
   }
 
   captureSmartTimelineFrame(settings);
-  const sampleFps = Math.min(60, Math.max(24, effectiveRecordingFps(settings)));
+  const sampleFps = Math.min(performanceProfile(settings).smartTimelineFps, Math.max(6, effectiveRecordingFps(settings)));
   state.smartTimelineId = window.setInterval(() => {
     captureSmartTimelineFrame(settings);
   }, Math.round(1000 / sampleFps));
@@ -1710,10 +1957,10 @@ function captureSizeForSettings(settings = getSettings()) {
   }
 
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
-  return {
+  return capCanvasSize({
     width: profile.width,
     height: profile.height
-  };
+  }, performanceCaptureShortSide(settings));
 }
 
 function syncCanvasOutputSize() {
@@ -3472,6 +3719,9 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
       effectiveFps,
       requestedFps: timelinePlan.settings.fps,
       droppedFrames,
+      performanceMode: timelinePlan.settings.performanceMode,
+      performanceResolvedMode: timelinePlan.settings.performanceResolvedMode || activePerformanceMode(timelinePlan.settings),
+      performanceAdaptiveLevel: state.performance.adaptiveLevel,
       attentionEvents,
       cameraSegments: segmentCount,
       keyframes: cameraPlan.keyframes.length,
@@ -3750,10 +4000,11 @@ async function openCameraStream(settings = getSettings()) {
   }
 
   try {
+    const profile = performanceProfile(settings);
     const videoConstraints = {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      frameRate: { ideal: 30, max: 60 }
+      width: { ideal: profile.cameraWidth },
+      height: { ideal: profile.cameraHeight },
+      frameRate: { ideal: profile.cameraFps, max: profile.cameraFps }
     };
 
     if (settings.cameraDevice) {
@@ -3784,6 +4035,81 @@ function stopStream(stream) {
 
   for (const track of stream.getTracks()) {
     track.stop();
+  }
+}
+
+async function createRecordingChunkSession(settings, mimeType) {
+  const session = await window.smartie.createRecordingSession({
+    suggestedName: buildSuggestedName(settings),
+    mimeType: mimeType || 'video/webm'
+  });
+  state.recordingSessionId = session.id;
+  state.recordingSessionInfo = session;
+  state.chunkWriteQueue = Promise.resolve();
+  state.chunkWriteError = null;
+  state.chunkSequence = 0;
+  return session;
+}
+
+function queueRecordingChunk(blob) {
+  if (!blob || blob.size === 0) {
+    return;
+  }
+
+  if (!state.recordingSessionId) {
+    state.chunks.push(blob);
+    return;
+  }
+
+  const sessionId = state.recordingSessionId;
+  const sequence = state.chunkSequence;
+  state.chunkSequence += 1;
+  state.chunkWriteQueue = state.chunkWriteQueue
+    .then(async () => {
+      if (state.chunkWriteError) {
+        return;
+      }
+
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      await window.smartie.appendRecordingChunk({
+        sessionId,
+        sequence,
+        bytes
+      });
+    })
+    .catch((error) => {
+      state.chunkWriteError = error;
+    });
+}
+
+async function finalizeRecordingChunkSession() {
+  if (state.chunkWriteError) {
+    throw state.chunkWriteError;
+  }
+
+  await state.chunkWriteQueue;
+  if (state.chunkWriteError) {
+    throw state.chunkWriteError;
+  }
+
+  if (!state.recordingSessionId) {
+    return null;
+  }
+
+  const session = await window.smartie.finalizeRecordingSession(state.recordingSessionId);
+  state.recordingSessionInfo = session;
+  return session;
+}
+
+async function discardRecordingChunkSession(sessionId = state.recordingSessionId) {
+  if (!sessionId || typeof window.smartie.discardRecordingSession !== 'function') {
+    return;
+  }
+
+  try {
+    await window.smartie.discardRecordingSession(sessionId);
+  } catch (error) {
+    console.warn('Could not discard temporary recording session.', error);
   }
 }
 
@@ -4046,9 +4372,14 @@ function buildRecordingMetadata({
       requestedFps: settings.fps,
       smoothRecording: settings.smoothRecording,
       recordingEngine: settings.recordingEngine,
+      requestedRecordingEngine: settings.requestedRecordingEngine || settings.recordingEngine,
       renderPipeline,
       timelineSampleCount,
       performanceMode: settings.smoothRecording ? settings.performanceMode : 'quality',
+      performanceResolvedMode: settings.performanceResolvedMode || activePerformanceMode(settings),
+      performanceTier: settings.performanceTier || state.performance.systemProfile?.tier || null,
+      performanceGovernor: settings.performanceGovernor || null,
+      requestedQuality: settings.requestedQuality || settings.quality,
       manualFramePump: Boolean(state.canvasVideoTrack && typeof state.canvasVideoTrack.requestFrame === 'function'),
       bitrate: recordingBitrate(settings),
       microphone: settings.microphone,
@@ -4079,8 +4410,11 @@ async function startRecording() {
   try {
     syncControls();
     setStatus('Preparing capture');
-    resizeCanvasForProfile();
-    const settings = getSettings();
+    if (!state.performance.systemProfile) {
+      await hydratePerformanceProfile();
+    }
+    const settings = prepareRecordingSettings(getSettings());
+    resizeCanvasForProfile(settings);
     state.recordingSettings = { ...settings };
     state.stoppedDurationMs = 0;
     await runCountdown(settings.countdownSeconds);
@@ -4118,6 +4452,8 @@ async function startRecording() {
       recorderOptions.mimeType = mimeType;
     }
 
+    await createRecordingChunkSession(settings, state.recordingMimeType || mimeType || 'video/webm');
+
     state.chunks = [];
     state.markers = [];
     state.activeMarker = null;
@@ -4133,9 +4469,7 @@ async function startRecording() {
     state.recordingMimeType = state.mediaRecorder.mimeType || mimeType || 'video/webm';
 
     state.mediaRecorder.addEventListener('dataavailable', (event) => {
-      if (event.data && event.data.size > 0) {
-        state.chunks.push(event.data);
-      }
+      queueRecordingChunk(event.data);
     });
 
     state.mediaRecorder.addEventListener('stop', saveRecording);
@@ -4146,6 +4480,7 @@ async function startRecording() {
     state.startedAt = Date.now();
     state.pausedAt = 0;
     state.pausedDuration = 0;
+    resetPerformanceGovernor();
     resetHealth();
     state.timerId = window.setInterval(updateTimer, 250);
     state.drawing = true;
@@ -4166,7 +4501,9 @@ async function startRecording() {
     }
 
     elements.recordingDot.classList.add('active');
-    setStatus('Recording');
+    setStatus(settings.performanceGovernor?.notes?.length
+      ? `Recording (${settings.performanceGovernor.label})`
+      : 'Recording');
     syncControls();
   } catch (error) {
     console.error(error);
@@ -4320,7 +4657,30 @@ async function reportShortcutRegistration() {
   }
 }
 
-function cleanupRecording() {
+async function hydratePerformanceProfile() {
+  if (typeof window.smartie.getPerformanceProfile !== 'function') {
+    return;
+  }
+
+  try {
+    const profile = await window.smartie.getPerformanceProfile();
+    state.performance.systemProfile = profile;
+    state.performance.activeMode = recommendedPerformanceMode();
+    syncControls();
+  } catch (error) {
+    console.warn('Could not inspect Smartie performance profile.', error);
+    state.performance.systemProfile = {
+      tier: 'unknown',
+      recommendedMode: 'balanced',
+      reasons: ['system profile unavailable']
+    };
+    state.performance.activeMode = 'balanced';
+    syncControls();
+  }
+}
+
+function cleanupRecording({ keepSession = false } = {}) {
+  const sessionToDiscard = keepSession ? null : state.recordingSessionId;
   state.drawing = false;
   state.recording = false;
   state.paused = false;
@@ -4358,6 +4718,13 @@ function cleanupRecording() {
   state.canvasStream = null;
   state.canvasVideoTrack = null;
   state.mediaRecorder = null;
+  if (!keepSession) {
+    state.recordingSessionId = null;
+    state.recordingSessionInfo = null;
+    state.chunkWriteQueue = Promise.resolve();
+    state.chunkWriteError = null;
+    state.chunkSequence = 0;
+  }
   state.recordingMimeType = null;
   state.recordedVideoSize = null;
   state.recordingSettings = null;
@@ -4380,6 +4747,10 @@ function cleanupRecording() {
   });
   resetMicMeter(elements.microphone.checked ? 'Mic armed' : 'Mic off');
   resetHealth();
+  resetPerformanceGovernor();
+  if (sessionToDiscard) {
+    discardRecordingChunkSession(sessionToDiscard);
+  }
 }
 
 async function saveRecording() {
@@ -4393,10 +4764,23 @@ async function saveRecording() {
   }
 
   const mimeType = state.recordingMimeType || recorderMimeType() || 'video/webm';
-  const rawBlob = new Blob(state.chunks, { type: mimeType });
   const settings = state.recordingSettings || getSettings();
   const durationMs = state.stoppedDurationMs || recordingElapsedMs();
   const markers = state.markers.slice();
+  const sessionId = state.recordingSessionId;
+  let sessionSubmitted = false;
+
+  try {
+    await finalizeRecordingChunkSession();
+  } catch (error) {
+    console.error('Could not flush recording chunks.', error);
+    cleanupRecording();
+    state.chunks = [];
+    setStatus(error.message || 'Recording write failed');
+    syncControls();
+    return;
+  }
+
   const timelinePlan = {
     settings,
     durationMs,
@@ -4459,21 +4843,33 @@ async function saveRecording() {
     accessibilityEvents: projectArtifacts.accessibilityTimeline.events.length
   };
 
-  cleanupRecording();
+  cleanupRecording({ keepSession: Boolean(sessionId) });
 
   try {
-    let outputBlob = rawBlob;
-    let audioSourceBytes = null;
+    let outputBytes = null;
+    let outputSessionId = sessionId;
+    let audioSourceSessionId = null;
 
     if (shouldPostRender) {
       try {
         setStatus('Rendering smart effects 0%');
-        outputBlob = await renderSmartEffectsVideo(rawBlob, timelinePlan);
-        audioSourceBytes = new Uint8Array(await rawBlob.arrayBuffer());
+        const rawSource = sessionId
+          ? await window.smartie.readRecordingSession(sessionId)
+          : {
+              bytes: new Uint8Array(await new Blob(state.chunks, { type: mimeType }).arrayBuffer()),
+              mimeType
+            };
+        const rawBlob = new Blob([rawSource.bytes], { type: rawSource.mimeType || mimeType });
+        const outputBlob = await renderSmartEffectsVideo(rawBlob, timelinePlan);
+        outputBytes = new Uint8Array(await outputBlob.arrayBuffer());
+        outputSessionId = null;
+        audioSourceSessionId = sessionId;
         metadata.capture.audioMux = 'ffmpeg';
       } catch (error) {
         console.error('Smart post-render failed; saving native recording instead.', error);
-        outputBlob = rawBlob;
+        outputSessionId = sessionId;
+        outputBytes = null;
+        audioSourceSessionId = null;
         metadata.capture.renderPipeline = 'native-fallback';
         metadata.capture.renderError = error.message || 'Smart post-render failed';
         metadata.capture.outputWidth = rawOutputSize.width;
@@ -4484,11 +4880,16 @@ async function saveRecording() {
       }
     }
 
-    const bytes = new Uint8Array(await outputBlob.arrayBuffer());
-    setStatus(audioSourceBytes ? 'Muxing audio' : 'Saving');
+    if (!outputSessionId && !outputBytes) {
+      outputBytes = new Uint8Array(await new Blob(state.chunks, { type: mimeType }).arrayBuffer());
+    }
+
+    setStatus(audioSourceSessionId ? 'Muxing audio' : 'Saving');
+    sessionSubmitted = Boolean(outputSessionId || audioSourceSessionId);
     const result = await window.smartie.saveRecording({
-      bytes,
-      audioSourceBytes,
+      bytes: outputBytes,
+      sessionId: outputSessionId,
+      audioSourceSessionId,
       suggestedName,
       saveMode: settings.saveMode,
       outputDir: settings.outputDir,
@@ -4531,8 +4932,16 @@ async function saveRecording() {
   } catch (error) {
     console.error(error);
     setStatus(error.message || 'Save failed');
+    if (sessionId && !sessionSubmitted) {
+      await discardRecordingChunkSession(sessionId);
+    }
   } finally {
     state.chunks = [];
+    state.recordingSessionId = null;
+    state.recordingSessionInfo = null;
+    state.chunkWriteQueue = Promise.resolve();
+    state.chunkWriteError = null;
+    state.chunkSequence = 0;
     syncControls();
   }
 }
@@ -4572,7 +4981,7 @@ function updateKeyOverlay(event) {
   state.keys = keys.slice(-4);
   if (state.recording && !state.paused && state.keys.length > 0) {
     const atMs = recordingElapsedMs();
-    state.telemetry.keyboard.push({
+    boundedPush(state.telemetry.keyboard, {
       time: roundTo(atMs / 1000, 3),
       time_ms: Math.round(atMs),
       keys: state.keys.slice(),
@@ -4583,7 +4992,7 @@ function updateKeyOverlay(event) {
         shift: event.shiftKey,
         meta: event.metaKey
       }
-    });
+    }, performanceProfile(state.recordingSettings || getSettings()).maxKeyboardEvents);
   }
   window.clearTimeout(updateKeyOverlay.clearId);
   updateKeyOverlay.clearId = window.setTimeout(() => {
@@ -4709,6 +5118,9 @@ refreshSources().catch((error) => {
 });
 hydrateOutputFolder().catch((error) => {
   console.warn('Could not load Smartie output folder.', error);
+});
+hydratePerformanceProfile().catch((error) => {
+  console.warn('Could not load Smartie performance profile.', error);
 });
 refreshMediaDevices({ quiet: true }).catch((error) => {
   console.warn('Could not enumerate media devices.', error);

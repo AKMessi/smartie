@@ -1,6 +1,7 @@
 const { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, screen, shell } = require('electron');
 const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const { promisify } = require('node:util');
 const ffmpegPath = require('ffmpeg-static');
@@ -13,6 +14,7 @@ app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
 
 let mainWindow;
 let shortcutStatuses = [];
+const recordingSessions = new Map();
 
 const recorderShortcuts = [
   {
@@ -197,6 +199,229 @@ function defaultRecordingDirectory() {
   } catch {
     return app.getPath('documents');
   }
+}
+
+function defaultTempRecordingDirectory() {
+  return path.join(app.getPath('temp'), 'smartie-recordings');
+}
+
+function safeSessionId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function cpuSummary() {
+  const cpus = os.cpus() || [];
+  const first = cpus[0] || {};
+  return {
+    logicalCores: cpus.length || 1,
+    model: first.model || 'Unknown CPU',
+    speedMhz: finiteNumber(first.speed, null)
+  };
+}
+
+function memorySummary() {
+  const totalBytes = os.totalmem();
+  const freeBytes = os.freemem();
+  let availableBytes = freeBytes;
+
+  if (typeof process.getSystemMemoryInfo === 'function') {
+    try {
+      const info = process.getSystemMemoryInfo();
+      if (Number.isFinite(info.available)) {
+        availableBytes = info.available * 1024;
+      }
+    } catch {
+      availableBytes = freeBytes;
+    }
+  }
+
+  return {
+    totalBytes,
+    freeBytes,
+    availableBytes,
+    totalGb: Math.round((totalBytes / 1024 ** 3) * 10) / 10,
+    availableGb: Math.round((availableBytes / 1024 ** 3) * 10) / 10
+  };
+}
+
+function classifyPerformanceProfile() {
+  const cpu = cpuSummary();
+  const memory = memorySummary();
+  const sessionType = process.env.XDG_SESSION_TYPE || null;
+  const reasons = [];
+  let score = 0;
+
+  if (cpu.logicalCores <= 2) {
+    score -= 3;
+    reasons.push('2 or fewer logical CPU cores');
+  } else if (cpu.logicalCores <= 4) {
+    score -= 1;
+    reasons.push('4 or fewer logical CPU cores');
+  } else if (cpu.logicalCores >= 8) {
+    score += 1;
+  }
+
+  if (memory.totalGb <= 4) {
+    score -= 3;
+    reasons.push('4 GB or less system memory');
+  } else if (memory.totalGb <= 8) {
+    score -= 1;
+    reasons.push('8 GB or less system memory');
+  } else if (memory.totalGb >= 16) {
+    score += 1;
+  }
+
+  if (memory.availableGb <= 1.5) {
+    score -= 2;
+    reasons.push('low available memory');
+  }
+
+  if (sessionType === 'wayland') {
+    reasons.push('Wayland capture path detected');
+  }
+
+  let tier = 'balanced';
+  let recommendedMode = 'balanced';
+  if (score <= -4) {
+    tier = 'potato';
+    recommendedMode = 'potato';
+  } else if (score <= -2) {
+    tier = 'low';
+    recommendedMode = 'ultra';
+  } else if (score >= 2) {
+    tier = 'performance';
+    recommendedMode = 'quality';
+  }
+
+  return {
+    tier,
+    recommendedMode,
+    reasons,
+    cpu,
+    memory,
+    platform: process.platform,
+    arch: process.arch,
+    sessionType,
+    hardwareAcceleration: !app.commandLine.hasSwitch('disable-gpu'),
+    capturedAt: new Date().toISOString()
+  };
+}
+
+async function createRecordingSession(payload = {}) {
+  await fs.mkdir(defaultTempRecordingDirectory(), { recursive: true });
+  const id = safeSessionId();
+  const extension = path.extname(payload.suggestedName || '') || '.webm';
+  const filePath = path.join(defaultTempRecordingDirectory(), `smartie-${id}${extension}`);
+  const handle = await fs.open(filePath, 'w');
+  const session = {
+    id,
+    filePath,
+    handle,
+    mimeType: payload.mimeType || 'video/webm',
+    suggestedName: payload.suggestedName || null,
+    bytesWritten: 0,
+    chunkCount: 0,
+    finalized: false,
+    queue: Promise.resolve(),
+    createdAt: new Date().toISOString()
+  };
+
+  recordingSessions.set(id, session);
+  return {
+    id,
+    filePath,
+    mimeType: session.mimeType
+  };
+}
+
+function getRecordingSession(sessionId) {
+  const session = recordingSessions.get(sessionId);
+  if (!session) {
+    throw new Error('Recording session is unavailable.');
+  }
+
+  return session;
+}
+
+async function appendRecordingChunk(sessionId, bytes) {
+  const session = getRecordingSession(sessionId);
+  if (session.finalized) {
+    throw new Error('Recording session is already finalized.');
+  }
+
+  const buffer = Buffer.from(bytes || []);
+  if (buffer.length === 0) {
+    return {
+      bytesWritten: session.bytesWritten,
+      chunkCount: session.chunkCount
+    };
+  }
+
+  session.queue = session.queue.then(async () => {
+    await session.handle.writeFile(buffer);
+    session.bytesWritten += buffer.length;
+    session.chunkCount += 1;
+  });
+
+  await session.queue;
+  return {
+    bytesWritten: session.bytesWritten,
+    chunkCount: session.chunkCount
+  };
+}
+
+async function finalizeRecordingSession(sessionId) {
+  const session = getRecordingSession(sessionId);
+  await session.queue;
+  if (!session.finalized) {
+    await session.handle.close();
+    session.finalized = true;
+    session.closedAt = new Date().toISOString();
+  }
+
+  return {
+    id: session.id,
+    filePath: session.filePath,
+    mimeType: session.mimeType,
+    bytesWritten: session.bytesWritten,
+    chunkCount: session.chunkCount
+  };
+}
+
+async function discardRecordingSession(sessionId) {
+  if (!sessionId || !recordingSessions.has(sessionId)) {
+    return false;
+  }
+
+  const session = recordingSessions.get(sessionId);
+  recordingSessions.delete(sessionId);
+  try {
+    await session.queue;
+  } catch {
+    // The session is being discarded; the original write error is no longer useful.
+  }
+
+  if (!session.finalized) {
+    try {
+      await session.handle.close();
+    } catch {
+      // Ignore close failures while cleaning a failed or discarded take.
+    }
+  }
+
+  await fs.rm(session.filePath, { force: true });
+  return true;
+}
+
+async function readRecordingSession(sessionId) {
+  const session = getRecordingSession(sessionId);
+  await finalizeRecordingSession(sessionId);
+  return {
+    bytes: await fs.readFile(session.filePath),
+    mimeType: session.mimeType,
+    bytesWritten: session.bytesWritten,
+    chunkCount: session.chunkCount
+  };
 }
 
 function sidecarPathFor(videoPath) {
@@ -659,22 +884,71 @@ function muxAudioIntoWebm(videoPath, audioSourcePath, outputPath) {
   });
 }
 
-async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm', audioSourceBytes = null, attentionTimeline = null, cameraPlan = null, projectArtifacts = null) {
+async function materializeRecordingInput(filePath, { bytes = null, sessionId = null } = {}) {
+  if (sessionId) {
+    const session = getRecordingSession(sessionId);
+    await finalizeRecordingSession(sessionId);
+    await linkOrCopyRecording(session.filePath, filePath);
+    return {
+      input: 'session',
+      bytesWritten: session.bytesWritten,
+      chunkCount: session.chunkCount
+    };
+  }
+
+  if (!bytes) {
+    throw new Error('No recording data received.');
+  }
+
+  await fs.writeFile(filePath, Buffer.from(bytes));
+  return {
+    input: 'bytes',
+    bytesWritten: Buffer.byteLength(Buffer.from(bytes)),
+    chunkCount: null
+  };
+}
+
+async function audioSourcePathFromInput(filePath, audioSourceBytes = null, audioSourceSessionId = null) {
+  if (audioSourceSessionId) {
+    const session = getRecordingSession(audioSourceSessionId);
+    await finalizeRecordingSession(audioSourceSessionId);
+    return {
+      path: session.filePath,
+      temporary: false
+    };
+  }
+
+  if (!audioSourceBytes) {
+    return null;
+  }
+
+  const tempAudioPath = `${filePath}.${Date.now()}.audio-source.webm`;
+  await fs.writeFile(tempAudioPath, Buffer.from(audioSourceBytes));
+  return {
+    path: tempAudioPath,
+    temporary: true
+  };
+}
+
+async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm', audioSourceBytes = null, attentionTimeline = null, cameraPlan = null, projectArtifacts = null, sessionId = null, audioSourceSessionId = null) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  if (audioSourceBytes) {
+  let materialized = null;
+
+  if (audioSourceBytes || audioSourceSessionId) {
     const tempBase = `${filePath}.${Date.now()}`;
     const tempVideoPath = `${tempBase}.video-only.webm`;
-    const tempAudioPath = `${tempBase}.audio-source.webm`;
-    await fs.writeFile(tempVideoPath, Buffer.from(bytes));
-    await fs.writeFile(tempAudioPath, Buffer.from(audioSourceBytes));
+    const audioSource = await audioSourcePathFromInput(filePath, audioSourceBytes, audioSourceSessionId);
+    materialized = await materializeRecordingInput(tempVideoPath, { bytes, sessionId });
     try {
-      await muxAudioIntoWebm(tempVideoPath, tempAudioPath, filePath);
+      await muxAudioIntoWebm(tempVideoPath, audioSource.path, filePath);
     } finally {
       await fs.rm(tempVideoPath, { force: true });
-      await fs.rm(tempAudioPath, { force: true });
+      if (audioSource.temporary) {
+        await fs.rm(audioSource.path, { force: true });
+      }
     }
   } else {
-    await fs.writeFile(filePath, Buffer.from(bytes));
+    materialized = await materializeRecordingInput(filePath, { bytes, sessionId });
   }
 
   if (!metadata) {
@@ -684,7 +958,8 @@ async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'we
       chaptersPath: null,
       mp4Path: null,
       projectPath: null,
-      projectError: null
+      projectError: null,
+      recordingInput: materialized
     };
   }
 
@@ -731,6 +1006,7 @@ async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'we
     proxyPreviewPath: project ? project.proxyPreviewPath : null,
     projectRecordingPath: project ? project.projectRecordingPath : null,
     projectFileMode: project ? project.projectFileMode : null,
+    recordingInput: materialized,
     projectError
   };
 }
@@ -761,6 +1037,25 @@ ipcMain.handle('smartie:get-pointer', () => ({
   point: screen.getCursorScreenPoint(),
   displays: getDisplaySnapshot()
 }));
+
+ipcMain.handle('smartie:get-performance-profile', () => classifyPerformanceProfile());
+
+ipcMain.handle('smartie:create-recording-session', async (_event, payload) => createRecordingSession(payload));
+
+ipcMain.handle('smartie:append-recording-chunk', async (_event, payload) => {
+  const { sessionId, bytes } = payload || {};
+  if (!sessionId) {
+    throw new Error('Recording session id is required.');
+  }
+
+  return appendRecordingChunk(sessionId, bytes);
+});
+
+ipcMain.handle('smartie:finalize-recording-session', async (_event, sessionId) => finalizeRecordingSession(sessionId));
+
+ipcMain.handle('smartie:read-recording-session', async (_event, sessionId) => readRecordingSession(sessionId));
+
+ipcMain.handle('smartie:discard-recording-session', async (_event, sessionId) => discardRecordingSession(sessionId));
 
 async function getActiveWindowSnapshot() {
   const snapshot = {
@@ -831,45 +1126,65 @@ ipcMain.handle('smartie:save-camera-plan', async (_event, payload) => {
 });
 
 ipcMain.handle('smartie:save-recording', async (_event, payload) => {
-  const { bytes, audioSourceBytes, suggestedName, saveMode, outputDir, metadata, exportFormat, attentionTimeline, cameraPlan, projectArtifacts } = payload || {};
-  if (!bytes) {
+  const {
+    bytes,
+    sessionId,
+    audioSourceBytes,
+    audioSourceSessionId,
+    suggestedName,
+    saveMode,
+    outputDir,
+    metadata,
+    exportFormat,
+    attentionTimeline,
+    cameraPlan,
+    projectArtifacts
+  } = payload || {};
+  if (!bytes && !sessionId) {
     throw new Error('No recording data received.');
   }
 
-  if (saveMode === 'auto') {
-    const directory = outputDir || defaultRecordingDirectory();
-    const filePath = path.join(directory, suggestedName || path.basename(defaultRecordingPath()));
-    const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan, projectArtifacts);
+  const cleanupSessionIds = new Set([sessionId, audioSourceSessionId].filter(Boolean));
+  try {
+    if (saveMode === 'auto') {
+      const directory = outputDir || defaultRecordingDirectory();
+      const filePath = path.join(directory, suggestedName || path.basename(defaultRecordingPath()));
+      const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan, projectArtifacts, sessionId, audioSourceSessionId);
+      return {
+        canceled: false,
+        ...saved
+      };
+    }
+
+    showMainWindow();
+
+    const defaultPath = suggestedName
+      ? path.join(outputDir || defaultRecordingDirectory(), suggestedName)
+      : defaultRecordingPath();
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save Smartie recording',
+      defaultPath,
+      filters: [
+        { name: 'WebM video', extensions: ['webm'] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { canceled: true };
+    }
+
+    const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan, projectArtifacts, sessionId, audioSourceSessionId);
     return {
       canceled: false,
       ...saved
     };
+  } finally {
+    for (const id of cleanupSessionIds) {
+      await discardRecordingSession(id);
+    }
   }
-
-  showMainWindow();
-
-  const defaultPath = suggestedName
-    ? path.join(outputDir || defaultRecordingDirectory(), suggestedName)
-    : defaultRecordingPath();
-
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Smartie recording',
-    defaultPath,
-    filters: [
-      { name: 'WebM video', extensions: ['webm'] },
-      { name: 'All files', extensions: ['*'] }
-    ]
-  });
-
-  if (result.canceled || !result.filePath) {
-    return { canceled: true };
-  }
-
-  const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan, projectArtifacts);
-  return {
-    canceled: false,
-    ...saved
-  };
 });
 
 ipcMain.handle('smartie:save-snapshot', async (_event, payload) => {

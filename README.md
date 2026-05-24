@@ -12,6 +12,8 @@ saved video after recording.
 - Hybrid Smartie pipeline that records native video first and post-renders smart effects into the saved file.
 - Native smooth recording pipeline for direct desktop capture when no baked effects are needed.
 - Optional canvas-based live smart-effects pipeline for fully real-time baked effects.
+- Adaptive performance governor with Auto, Potato saver, Ultra smooth, Balanced, and Max quality profiles.
+- Disk-backed recording sessions that stream MediaRecorder chunks to the main process instead of holding the whole take in renderer memory.
 - Smart Director v2 auto zoom with telemetry capture, cue scoring, offline camera-plan compilation, render QA, and smooth keyframed playback.
 - Smart focus modes for Smart Director, cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Director style presets for subtle, balanced, or cinematic camera plans.
@@ -50,7 +52,7 @@ saved video after recording.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
 - Persistent capture and smart-framing preferences.
 - Global recorder shortcuts with Wayland portal support where available.
-- Low-latency Smartie hybrid engine, native recording engine, live smart-effects engine, render-load presets, quality presets,
+- Low-latency Smartie hybrid engine, native recording engine, live smart-effects engine, adaptive optimization presets, quality presets,
   frame-rate control, smart-effects layout control, countdown, elapsed timer, WebM export, and optional bundled-FFmpeg MP4 copy.
 - Linux desktop support through Electron desktop capture APIs.
 
@@ -128,6 +130,21 @@ store source cursor, click, keyboard, motion, semantic/accessibility context,
 proxy preview metadata, and render QA. The camera plan stores compiled smart
 zoom shots, keyframes, QA warnings, and editable segment metadata so Smartie can
 edit the director plan without changing the capture format.
+
+## Performance Architecture
+
+Smartie records through an adaptive telemetry-first pipeline. The Auto profile
+inspects CPU cores, memory, platform, and desktop session, then chooses the
+lightest profile that should keep capture smooth. Potato saver caps capture
+resolution, FPS, bitrate, preview refresh, motion scanning, webcam capture, and
+telemetry density. If the live canvas path starts dropping frames, the governor
+demotes expensive work during the take.
+
+The default Smartie hybrid engine keeps capture native and streams chunks to a
+temporary main-process recording session on disk. Smart zoom, vector cursor
+polish, overlays, and camera-plan rendering happen after stop, so weaker systems
+do not pay that cost while recording. Live smart effects remain available, but
+Auto and Potato saver move live canvas recording to hybrid when needed.
 
 On Linux/X11, semantic context can include the active window title through
 `xdotool` when available. On Wayland, Smartie records the limitation in
