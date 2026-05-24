@@ -121,10 +121,21 @@ const state = {
   timerId: null,
   lastDrawAt: 0,
   pointerPollId: null,
+  semanticPollId: null,
   smartTimelineId: null,
   smartTimeline: [],
   smartTrail: [],
   smartPulses: [],
+  telemetry: {
+    cursor: [],
+    clicks: [],
+    keyboard: [],
+    motion: [],
+    accessibility: [],
+    lastCursorSampleAt: -Infinity,
+    lastMotionSampleAt: -Infinity,
+    lastAccessibilityTitle: ''
+  },
   renderContext: null,
   trail: [],
   lastRecordingPath: null,
@@ -135,6 +146,7 @@ const state = {
   markers: [],
   activeMarker: null,
   lastAutoMarkerAt: -Infinity,
+  lastPulseAt: -Infinity,
   windowHiddenForRecording: false,
   keys: [],
   pulse: {
@@ -150,6 +162,7 @@ const state = {
   },
   lastSmartProjectPath: null,
   lastCameraPlan: null,
+  lastProjectArtifacts: null,
   attention: {
     active: {
       source: 'wide',
@@ -565,6 +578,7 @@ function renderDirectorPlan(plan = state.lastCameraPlan) {
 
   elements.directorPlanList.textContent = '';
   const segments = plan && Array.isArray(plan.segments) ? plan.segments : [];
+  const activeSegments = segments.filter((segment) => segment.enabled !== false);
   const stats = plan?.stats || {};
   const warnings = plan?.qa?.warnings || [];
 
@@ -576,9 +590,9 @@ function renderDirectorPlan(plan = state.lastCameraPlan) {
   const coverage = Math.round(finiteNumber(stats.zoomCoverage, 0) * 100);
   const sourceEvents = finiteNumber(stats.sourceEvents, 0);
   const warningText = warnings.length > 0 ? ` - ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : '';
-  elements.directorPlanStatus.textContent = `${segments.length} smart shots from ${sourceEvents} cues - ${coverage}% coverage${warningText}`;
+  elements.directorPlanStatus.textContent = `${activeSegments.length} active shots from ${sourceEvents} cues - ${coverage}% coverage${warningText}`;
 
-  if (segments.length === 0) {
+  if (activeSegments.length === 0) {
     const empty = document.createElement('span');
     empty.className = 'empty-mini';
     empty.textContent = 'Director kept this take wide.';
@@ -589,20 +603,120 @@ function renderDirectorPlan(plan = state.lastCameraPlan) {
   for (const segment of segments.slice(0, 8)) {
     const card = document.createElement('div');
     card.className = 'plan-segment';
+    card.classList.toggle('disabled', segment.enabled === false);
 
     const details = document.createElement('div');
     const title = document.createElement('strong');
     const meta = document.createElement('span');
     const scale = document.createElement('em');
+    const actions = document.createElement('div');
 
     title.textContent = `${segment.cue || 'focus'} ${formatTime(segment.startMs)}-${formatTime(segment.endMs)}`;
     meta.textContent = segment.reason || `${Math.round(finiteNumber(segment.confidence, 0) * 100)}% confidence`;
     scale.textContent = `${finiteNumber(segment.scale, 1).toFixed(2)}x`;
+    actions.className = 'plan-actions';
+    actions.append(
+      planActionButton(segment.enabled === false ? 'Show' : 'Hide', () => applyCameraPlanEdit(segment.id, 'toggle')),
+      planActionButton('-0.1x', () => applyCameraPlanEdit(segment.id, 'scale-down')),
+      planActionButton('+0.1x', () => applyCameraPlanEdit(segment.id, 'scale-up')),
+      planActionButton('Shorter', () => applyCameraPlanEdit(segment.id, 'shorter')),
+      planActionButton('Longer', () => applyCameraPlanEdit(segment.id, 'longer'))
+    );
 
     details.append(title, meta);
-    card.append(details, scale);
+    card.append(details, scale, actions);
     elements.directorPlanList.append(card);
   }
+}
+
+function planActionButton(label, onClick) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'mini-button';
+  button.textContent = label;
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+function editedPlanProfile(plan) {
+  return directorStyleProfile({
+    directorStyle: plan?.settings?.director_style || getSettings().directorStyle || 'balanced'
+  });
+}
+
+function rebuildEditedCameraPlan(plan) {
+  const durationMs = finiteNumber(plan?.stats?.durationMs, 0);
+  const profile = editedPlanProfile(plan);
+  const segments = Array.isArray(plan?.segments) ? plan.segments : [];
+  const activeSegments = segments.filter((segment) => segment.enabled !== false);
+  const keyframes = buildCameraKeyframes(activeSegments, durationMs, profile);
+  const qa = validateCameraPlan(activeSegments, keyframes, durationMs);
+
+  return {
+    ...plan,
+    edited_at: new Date().toISOString(),
+    segments,
+    keyframes,
+    qa,
+    stats: {
+      ...(plan.stats || {}),
+      ...qa.stats,
+      segmentCount: activeSegments.length,
+      durationMs
+    }
+  };
+}
+
+function applyCameraPlanEdit(segmentId, action) {
+  if (!state.lastCameraPlan) {
+    return;
+  }
+
+  const durationMs = finiteNumber(state.lastCameraPlan.stats?.durationMs, 0);
+  const nextPlan = {
+    ...state.lastCameraPlan,
+    segments: state.lastCameraPlan.segments.map((segment) => {
+      if (segment.id !== segmentId) {
+        return { ...segment };
+      }
+
+      const next = { ...segment };
+      if (action === 'toggle') {
+        next.enabled = segment.enabled === false;
+      } else if (action === 'scale-down') {
+        next.scale = roundTo(Math.max(1.05, finiteNumber(segment.scale, 1) - 0.1), 3);
+      } else if (action === 'scale-up') {
+        next.scale = roundTo(Math.min(2.5, finiteNumber(segment.scale, 1) + 0.1), 3);
+      } else if (action === 'shorter') {
+        next.endMs = Math.max(next.startMs + 600, next.endMs - 300);
+        next.durationMs = next.endMs - next.startMs;
+      } else if (action === 'longer') {
+        next.endMs = Math.min(durationMs, next.endMs + 300);
+        next.durationMs = next.endMs - next.startMs;
+      }
+
+      return next;
+    })
+  };
+
+  state.lastCameraPlan = rebuildEditedCameraPlan(nextPlan);
+  renderDirectorPlan(state.lastCameraPlan);
+  persistCameraPlanEdit().catch((error) => {
+    console.warn('Could not persist Smartie camera plan edit.', error);
+    setStatus('Plan edit not saved');
+  });
+}
+
+async function persistCameraPlanEdit() {
+  if (!state.lastSmartProjectPath || !state.lastCameraPlan || typeof window.smartie.saveCameraPlan !== 'function') {
+    return;
+  }
+
+  await window.smartie.saveCameraPlan({
+    projectPath: state.lastSmartProjectPath,
+    cameraPlan: state.lastCameraPlan
+  });
+  setStatus('Director plan updated');
 }
 
 function rememberRecording(recording) {
@@ -621,6 +735,78 @@ function clearRecentRecordings() {
   state.lastRecordingPath = null;
   renderRecentRecordings();
   syncControls();
+}
+
+function resetTelemetry() {
+  state.telemetry = {
+    cursor: [],
+    clicks: [],
+    keyboard: [],
+    motion: [],
+    accessibility: [],
+    lastCursorSampleAt: -Infinity,
+    lastMotionSampleAt: -Infinity,
+    lastAccessibilityTitle: ''
+  };
+}
+
+function telemetrySource(durationMs, outputSize, settings) {
+  return {
+    duration_ms: Math.round(finiteNumber(durationMs, 0)),
+    duration_sec: roundTo(finiteNumber(durationMs, 0) / 1000, 3),
+    width: outputSize.width,
+    height: outputSize.height,
+    fps: effectiveRecordingFps(settings),
+    source_id: state.selectedSource ? state.selectedSource.id : null,
+    source_name: state.selectedSource ? state.selectedSource.name : null
+  };
+}
+
+function buildTimelineArtifact(schema, events, source, key = 'events') {
+  return {
+    schema,
+    version: 1,
+    generated_at: new Date().toISOString(),
+    source,
+    stats: {
+      count: Array.isArray(events) ? events.length : 0
+    },
+    [key]: Array.isArray(events) ? events : []
+  };
+}
+
+function buildProjectArtifacts({ durationMs, outputSize, settings, cameraPlan, attentionTimeline, renderQa }) {
+  const source = telemetrySource(durationMs, outputSize, settings);
+  const proxyScale = Math.min(1, 640 / Math.max(outputSize.width, outputSize.height));
+
+  return {
+    cursorTimeline: buildTimelineArtifact('smartie.cursor_timeline.v1', state.telemetry.cursor.slice(), source, 'samples'),
+    clickTimeline: buildTimelineArtifact('smartie.click_timeline.v1', state.telemetry.clicks.slice(), source),
+    keyboardTimeline: buildTimelineArtifact('smartie.keyboard_timeline.v1', state.telemetry.keyboard.slice(), source),
+    motionTimeline: buildTimelineArtifact('smartie.motion_timeline.v1', state.telemetry.motion.slice(), source),
+    accessibilityTimeline: buildTimelineArtifact('smartie.accessibility_timeline.v1', state.telemetry.accessibility.slice(), source),
+    proxyTimeline: {
+      schema: 'smartie.proxy_timeline.v1',
+      version: 1,
+      generated_at: new Date().toISOString(),
+      source,
+      stats: {
+        proxyScale: roundTo(proxyScale, 4),
+        cameraSegments: cameraPlan.segments.length,
+        attentionEvents: attentionTimeline.events.length
+      },
+      proxies: [
+        {
+          kind: 'timeline-proxy',
+          width: Math.max(2, Math.round(outputSize.width * proxyScale)),
+          height: Math.max(2, Math.round(outputSize.height * proxyScale)),
+          camera_plan_schema: cameraPlan.schema,
+          render_independent: true
+        }
+      ]
+    },
+    renderQa
+  };
 }
 
 function getSettings() {
@@ -1008,6 +1194,7 @@ function pushRecordingMarker({ kind = 'manual', label, reason = null, x = state.
     ...marker,
     startedAt: performance.now()
   };
+  recordClickTelemetry(kind === 'manual' ? 'marker' : 'smart-marker', marker.x, marker.y, kind === 'manual' ? 0.76 : 0.82, reason || marker.label || kind);
   return marker;
 }
 
@@ -1037,6 +1224,15 @@ function recordSmartMoment(settings, reason, x = state.pointer.x, y = state.poin
 }
 
 function pushSmartPulse(x = state.pointer.x, y = state.pointer.y) {
+  const atMs = state.recording ? recordingElapsedMs() : 0;
+  if (state.recording && !state.paused && atMs - state.lastPulseAt < 260) {
+    return;
+  }
+
+  if (state.recording && !state.paused) {
+    state.lastPulseAt = atMs;
+  }
+
   state.pulse = {
     active: true,
     startedAt: performance.now(),
@@ -1051,6 +1247,8 @@ function pushSmartPulse(x = state.pointer.x, y = state.pointer.y) {
       y
     });
   }
+
+  recordClickTelemetry('pulse', x, y, 0.92, 'click pulse');
 }
 
 async function chooseOutputFolder() {
@@ -1195,6 +1393,66 @@ function selectedDisplay() {
   return state.displays[0];
 }
 
+function recordCursorTelemetry(x, y, velocity, atMs, pointerPayload) {
+  if (!state.recording || state.paused) {
+    return;
+  }
+
+  const elapsedSinceSample = atMs - state.telemetry.lastCursorSampleAt;
+  const movedEnough = velocity > 0.0018;
+  if (!movedEnough && elapsedSinceSample < 260) {
+    return;
+  }
+
+  state.telemetry.lastCursorSampleAt = atMs;
+  state.telemetry.cursor.push({
+    time: roundTo(atMs / 1000, 3),
+    time_ms: Math.round(atMs),
+    x: roundTo(x, 5),
+    y: roundTo(y, 5),
+    screen_x: Math.round(pointerPayload.point.x),
+    screen_y: Math.round(pointerPayload.point.y),
+    velocity: roundTo(velocity, 5)
+  });
+}
+
+function recordClickTelemetry(kind, x = state.pointer.x, y = state.pointer.y, confidence = 0.88, reason = kind) {
+  if (!state.recording || state.paused) {
+    return;
+  }
+
+  const atMs = recordingElapsedMs();
+  state.telemetry.clicks.push({
+    time: roundTo(atMs / 1000, 3),
+    time_ms: Math.round(atMs),
+    x: roundTo(clamp01(x), 5),
+    y: roundTo(clamp01(y), 5),
+    type: kind,
+    confidence: roundTo(clamp01(confidence), 3),
+    reason
+  });
+}
+
+function recordMotionTelemetry() {
+  if (!state.recording || state.paused) {
+    return;
+  }
+
+  const atMs = recordingElapsedMs();
+  if (atMs - state.telemetry.lastMotionSampleAt < 420 || state.motionTarget.strength < 0.015) {
+    return;
+  }
+
+  state.telemetry.lastMotionSampleAt = atMs;
+  state.telemetry.motion.push({
+    time: roundTo(atMs / 1000, 3),
+    time_ms: Math.round(atMs),
+    x: roundTo(clamp01(state.motionTarget.x), 5),
+    y: roundTo(clamp01(state.motionTarget.y), 5),
+    strength: roundTo(clamp01(state.motionTarget.strength), 3)
+  });
+}
+
 function mapPointerToCapture(pointerPayload) {
   const display = selectedDisplay();
   if (!display || !video.videoWidth || !video.videoHeight) {
@@ -1218,6 +1476,7 @@ function mapPointerToCapture(pointerPayload) {
   state.pointer.x = x;
   state.pointer.y = y;
   state.pointer.velocity = velocity;
+  recordCursorTelemetry(x, y, velocity, recordingElapsedMs(), pointerPayload);
 
   if (velocity > 0.002) {
     state.pointer.lastMovedAt = performance.now();
@@ -1301,6 +1560,7 @@ function scanMotionTarget(settings, timestamp) {
   state.motionTarget.y = weightedY / weight / motionCanvas.height;
   state.motionTarget.strength = Math.min(1, weight / 28000);
   state.motionTarget.lastSeenAt = timestamp;
+  recordMotionTelemetry();
 }
 
 function startPointerPolling() {
@@ -1320,6 +1580,60 @@ function stopPointerPolling() {
   if (state.pointerPollId) {
     window.clearInterval(state.pointerPollId);
     state.pointerPollId = null;
+  }
+}
+
+function startSemanticPolling() {
+  stopSemanticPolling();
+  const capture = async () => {
+    if (!state.recording || state.paused || typeof window.smartie.getSemanticContext !== 'function') {
+      return;
+    }
+
+    try {
+      const payload = await window.smartie.getSemanticContext();
+      const activeWindow = payload.activeWindow || {};
+      const title = activeWindow.title || '';
+      const shouldRecord = title !== state.telemetry.lastAccessibilityTitle || state.telemetry.accessibility.length === 0;
+      if (!activeWindow.available && state.telemetry.accessibility.length > 0) {
+        return;
+      }
+      if (!shouldRecord && activeWindow.available) {
+        return;
+      }
+
+      state.telemetry.lastAccessibilityTitle = title;
+      const atMs = recordingElapsedMs();
+      state.telemetry.accessibility.push({
+        time: roundTo(atMs / 1000, 3),
+        time_ms: Math.round(atMs),
+        provider: activeWindow.provider || null,
+        available: Boolean(activeWindow.available),
+        title,
+        pid: activeWindow.pid || null,
+        session_type: activeWindow.sessionType || null,
+        error: activeWindow.error || null,
+        selected_source: state.selectedSource
+          ? {
+              id: state.selectedSource.id,
+              name: state.selectedSource.name,
+              displayId: state.selectedSource.displayId
+            }
+          : null
+      });
+    } catch (error) {
+      console.warn('Could not capture semantic context.', error);
+    }
+  };
+
+  capture();
+  state.semanticPollId = window.setInterval(capture, 1000);
+}
+
+function stopSemanticPolling() {
+  if (state.semanticPollId) {
+    window.clearInterval(state.semanticPollId);
+    state.semanticPollId = null;
   }
 }
 
@@ -1787,12 +2101,13 @@ function drawVideoFrame(settings) {
   ctx.drawImage(video, drawX, drawY, drawWidth, drawHeight);
 
   if (settings.smartMaster && settings.motionFocus && state.frame.scale > 1.03) {
+    const focusPoint = vectorLayerPoint(state.pointer.x, state.pointer.y);
     const gradient = ctx.createRadialGradient(
-      width * state.pointer.x,
-      height * state.pointer.y,
+      focusPoint.x,
+      focusPoint.y,
       width * 0.08,
-      width * state.pointer.x,
-      height * state.pointer.y,
+      focusPoint.x,
+      focusPoint.y,
       width * 0.52
     );
     gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
@@ -1886,8 +2201,11 @@ function drawCursorSpotlight(settings) {
     return;
   }
 
-  const x = canvas.width * state.pointer.x;
-  const y = canvas.height * state.pointer.y;
+  const point = vectorLayerPoint(state.pointer.x, state.pointer.y);
+  if (!point.visible) {
+    return;
+  }
+  const { x, y } = point;
 
   ctx.save();
   ctx.strokeStyle = 'rgba(66, 214, 198, 0.95)';
@@ -1901,6 +2219,27 @@ function drawCursorSpotlight(settings) {
   ctx.arc(x, y, Math.max(8, canvas.width * 0.006), 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+}
+
+function vectorLayerPoint(x, y) {
+  const width = canvas.width;
+  const height = canvas.height;
+  const scale = Math.max(1, finiteNumber(state.frame.scale, 1));
+  const drawWidth = width * scale;
+  const drawHeight = height * scale;
+  const drawX = -Math.max(0, drawWidth - width) * clamp01(finiteNumber(state.frame.x, 0.5));
+  const drawY = -Math.max(0, drawHeight - height) * clamp01(finiteNumber(state.frame.y, 0.5));
+  const pointX = drawX + clamp01(finiteNumber(x, 0.5)) * drawWidth;
+  const pointY = drawY + clamp01(finiteNumber(y, 0.5)) * drawHeight;
+
+  return {
+    x: pointX,
+    y: pointY,
+    visible: pointX >= -width * 0.08
+      && pointX <= width * 1.08
+      && pointY >= -height * 0.08
+      && pointY <= height * 1.08
+  };
 }
 
 function drawCursorTrail(settings) {
@@ -1925,9 +2264,15 @@ function drawCursorTrail(settings) {
 
     ctx.strokeStyle = `rgba(66, 214, 198, ${opacity * 0.72})`;
     ctx.lineWidth = Math.max(5, canvas.width * 0.004) * opacity;
+    const previousPoint = vectorLayerPoint(previous.x, previous.y);
+    const currentPoint = vectorLayerPoint(current.x, current.y);
+    if (!previousPoint.visible && !currentPoint.visible) {
+      continue;
+    }
+
     ctx.beginPath();
-    ctx.moveTo(previous.x * canvas.width, previous.y * canvas.height);
-    ctx.lineTo(current.x * canvas.width, current.y * canvas.height);
+    ctx.moveTo(previousPoint.x, previousPoint.y);
+    ctx.lineTo(currentPoint.x, currentPoint.y);
     ctx.stroke();
   }
 
@@ -1963,9 +2308,15 @@ function drawTimelineCursorTrail(settings, atMs, trail) {
 
     ctx.strokeStyle = `rgba(66, 214, 198, ${opacity * 0.72})`;
     ctx.lineWidth = Math.max(5, canvas.width * 0.004) * opacity;
+    const previousPoint = vectorLayerPoint(previous.x, previous.y);
+    const currentPoint = vectorLayerPoint(current.x, current.y);
+    if (!previousPoint.visible && !currentPoint.visible) {
+      continue;
+    }
+
     ctx.beginPath();
-    ctx.moveTo(previous.x * canvas.width, previous.y * canvas.height);
-    ctx.lineTo(current.x * canvas.width, current.y * canvas.height);
+    ctx.moveTo(previousPoint.x, previousPoint.y);
+    ctx.lineTo(currentPoint.x, currentPoint.y);
     ctx.stroke();
   }
 
@@ -1984,8 +2335,11 @@ function drawPulse(settings) {
     return;
   }
 
-  const x = canvas.width * state.pulse.x;
-  const y = canvas.height * state.pulse.y;
+  const point = vectorLayerPoint(state.pulse.x, state.pulse.y);
+  if (!point.visible) {
+    return;
+  }
+  const { x, y } = point;
   const radius = canvas.width * (0.02 + progress * 0.05);
 
   ctx.save();
@@ -2009,8 +2363,11 @@ function drawTimelinePulses(settings, atMs, pulses) {
     }
 
     const progress = elapsed / 620;
-    const x = canvas.width * pulse.x;
-    const y = canvas.height * pulse.y;
+    const point = vectorLayerPoint(pulse.x, pulse.y);
+    if (!point.visible) {
+      continue;
+    }
+    const { x, y } = point;
     const radius = canvas.width * (0.02 + progress * 0.05);
 
     ctx.save();
@@ -3014,6 +3371,8 @@ function validateCameraPlan(segments, keyframes, durationMs) {
   const errors = [];
   let previous = null;
   let maxScale = 1;
+  let maxPanSpeed = 0;
+  let maxZoomSpeed = 0;
 
   for (const segment of segments) {
     if (segment.startMs < 0 || segment.endMs <= segment.startMs || segment.endMs > durationMs + 50) {
@@ -3028,9 +3387,19 @@ function validateCameraPlan(segments, keyframes, durationMs) {
     if (previous) {
       const gap = segment.startMs - previous.endMs;
       const jump = Math.hypot(segment.x - previous.x, segment.y - previous.y);
+      const transitionSeconds = Math.max(0.08, gap / 1000);
+      maxPanSpeed = Math.max(maxPanSpeed, jump / transitionSeconds);
+      maxZoomSpeed = Math.max(maxZoomSpeed, Math.abs(segment.scale - previous.scale) / transitionSeconds);
       if (gap < 220 && jump > 0.48) {
         warnings.push(`${segment.id} moves far from the previous shot.`);
       }
+      if (gap > 8000) {
+        warnings.push(`${segment.id} follows a long wide gap; confirm no key moment was missed.`);
+      }
+    }
+    const segmentDurationMs = finiteNumber(segment.durationMs, segment.endMs - segment.startMs);
+    if (segmentDurationMs < 780) {
+      warnings.push(`${segment.id} is a short zoom and may feel abrupt.`);
     }
     maxScale = Math.max(maxScale, segment.scale);
     previous = segment;
@@ -3054,7 +3423,68 @@ function validateCameraPlan(segments, keyframes, durationMs) {
       segmentCount: segments.length,
       keyframeCount: keyframes.length,
       zoomCoverage: roundTo(coverage, 3),
-      maxScale: roundTo(maxScale, 3)
+      maxScale: roundTo(maxScale, 3),
+      maxPanSpeed: roundTo(maxPanSpeed, 3),
+      maxZoomSpeed: roundTo(maxZoomSpeed, 3)
+    }
+  };
+}
+
+function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, outputSize }) {
+  const warnings = [...(cameraPlan.qa?.warnings || [])];
+  const errors = [...(cameraPlan.qa?.errors || [])];
+  const durationMs = Math.max(0, finiteNumber(timelinePlan.durationMs, 0));
+  const effectiveFps = effectiveRecordingFps(timelinePlan.settings);
+  const droppedFrames = finiteNumber(state.health.droppedFrames, 0);
+  const attentionEvents = attentionTimeline.events.length;
+  const segmentCount = cameraPlan.segments.length;
+  const zoomCoverage = finiteNumber(cameraPlan.stats.zoomCoverage, 0);
+
+  if (attentionEvents >= 3 && segmentCount === 0 && timelinePlan.settings.autoZoom) {
+    warnings.push('Attention telemetry exists but no zoom segments were selected.');
+  }
+  if (durationMs > 15000 && segmentCount === 0 && timelinePlan.settings.autoZoom) {
+    warnings.push('Long recording has no camera moves.');
+  }
+  if (zoomCoverage < 0.08 && attentionEvents > 5 && timelinePlan.settings.autoZoom) {
+    warnings.push('Zoom coverage is low for the amount of attention telemetry.');
+  }
+  if (zoomCoverage > 0.78) {
+    warnings.push('Zoom coverage is very high; output may feel cramped.');
+  }
+  if (droppedFrames > Math.max(4, durationMs / 1000)) {
+    warnings.push('Capture health reported elevated dropped frames.');
+  }
+  if (effectiveFps < finiteNumber(timelinePlan.settings.fps, effectiveFps)) {
+    warnings.push('Effective FPS is lower than requested because of the selected recording engine/profile.');
+  }
+
+  return {
+    schema: 'smartie.render_qa.v1',
+    generated_at: new Date().toISOString(),
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    metrics: {
+      durationMs,
+      outputWidth: outputSize.width,
+      outputHeight: outputSize.height,
+      effectiveFps,
+      requestedFps: timelinePlan.settings.fps,
+      droppedFrames,
+      attentionEvents,
+      cameraSegments: segmentCount,
+      keyframes: cameraPlan.keyframes.length,
+      zoomCoverage,
+      maxScale: finiteNumber(cameraPlan.stats.maxScale, 1),
+      renderPipeline: metadata.capture.renderPipeline,
+      telemetry: {
+        cursorSamples: state.telemetry.cursor.length,
+        clickEvents: state.telemetry.clicks.length,
+        keyboardEvents: state.telemetry.keyboard.length,
+        motionEvents: state.telemetry.motion.length,
+        accessibilityEvents: state.telemetry.accessibility.length
+      }
     }
   };
 }
@@ -3692,11 +4122,13 @@ async function startRecording() {
     state.markers = [];
     state.activeMarker = null;
     state.lastAutoMarkerAt = -Infinity;
+    state.lastPulseAt = -Infinity;
     state.lastDrawAt = 0;
     state.discardRequested = false;
     state.smartTimeline = [];
     state.smartTrail = [];
     state.smartPulses = [];
+    resetTelemetry();
     state.mediaRecorder = new MediaRecorder(state.canvasStream, recorderOptions);
     state.recordingMimeType = state.mediaRecorder.mimeType || mimeType || 'video/webm';
 
@@ -3723,6 +4155,7 @@ async function startRecording() {
     state.motionTarget.strength = 0;
     state.trail = [];
     startPointerPolling();
+    startSemanticPolling();
     startSmartTimeline(settings);
     if (usesSmartCanvasRecording(settings) || !settings.hideWhileRecording) {
       requestAnimationFrame(drawLoop);
@@ -3894,8 +4327,10 @@ function cleanupRecording() {
   state.markers = [];
   state.activeMarker = null;
   state.lastAutoMarkerAt = -Infinity;
+  state.lastPulseAt = -Infinity;
   state.lastDrawAt = 0;
   stopPointerPolling();
+  stopSemanticPolling();
   stopSmartTimeline();
   stopMicMeter();
   window.clearInterval(state.timerId);
@@ -3933,6 +4368,7 @@ function cleanupRecording() {
   state.smartTimeline = [];
   state.smartTrail = [];
   state.smartPulses = [];
+  resetTelemetry();
   state.renderContext = null;
   resetAttentionEngine();
   video.srcObject = null;
@@ -3990,6 +4426,21 @@ async function saveRecording() {
   const attentionTimeline = buildAttentionTimeline(timelinePlan, finalOutputSize);
   const cameraPlan = compileSmartDirectorPlan(timelinePlan, attentionTimeline, finalOutputSize);
   timelinePlan.cameraPlan = cameraPlan;
+  const renderQa = buildRenderQa({
+    cameraPlan,
+    attentionTimeline,
+    timelinePlan,
+    metadata,
+    outputSize: finalOutputSize
+  });
+  const projectArtifacts = buildProjectArtifacts({
+    durationMs,
+    outputSize: finalOutputSize,
+    settings,
+    cameraPlan,
+    attentionTimeline,
+    renderQa
+  });
   metadata.director = {
     schema: cameraPlan.schema,
     style: settings.directorStyle,
@@ -3997,7 +4448,15 @@ async function saveRecording() {
     keyframeCount: cameraPlan.keyframes.length,
     attentionEventCount: attentionTimeline.events.length,
     qa: cameraPlan.qa,
+    renderQa,
     stats: cameraPlan.stats
+  };
+  metadata.telemetry = {
+    cursorSamples: projectArtifacts.cursorTimeline.samples.length,
+    clickEvents: projectArtifacts.clickTimeline.events.length,
+    keyboardEvents: projectArtifacts.keyboardTimeline.events.length,
+    motionEvents: projectArtifacts.motionTimeline.events.length,
+    accessibilityEvents: projectArtifacts.accessibilityTimeline.events.length
   };
 
   cleanupRecording();
@@ -4019,6 +4478,9 @@ async function saveRecording() {
         metadata.capture.renderError = error.message || 'Smart post-render failed';
         metadata.capture.outputWidth = rawOutputSize.width;
         metadata.capture.outputHeight = rawOutputSize.height;
+        metadata.director.renderQa.warnings.push('Smart post-render failed; saved the native recording instead.');
+        metadata.director.renderQa.metrics.renderPipeline = 'native-fallback';
+        projectArtifacts.renderQa = metadata.director.renderQa;
       }
     }
 
@@ -4033,6 +4495,7 @@ async function saveRecording() {
       metadata,
       attentionTimeline,
       cameraPlan,
+      projectArtifacts,
       exportFormat: settings.exportFormat
     });
 
@@ -4044,6 +4507,7 @@ async function saveRecording() {
     state.lastRecordingPath = result.filePath;
     state.lastSmartProjectPath = result.projectPath || null;
     state.lastCameraPlan = cameraPlan;
+    state.lastProjectArtifacts = projectArtifacts;
     rememberRecording({
       filePath: result.filePath,
       metadataPath: result.metadataPath,
@@ -4106,6 +4570,21 @@ function updateKeyOverlay(event) {
   }
 
   state.keys = keys.slice(-4);
+  if (state.recording && !state.paused && state.keys.length > 0) {
+    const atMs = recordingElapsedMs();
+    state.telemetry.keyboard.push({
+      time: roundTo(atMs / 1000, 3),
+      time_ms: Math.round(atMs),
+      keys: state.keys.slice(),
+      key: normalizeKey(event),
+      modifiers: {
+        ctrl: event.ctrlKey,
+        alt: event.altKey,
+        shift: event.shiftKey,
+        meta: event.metaKey
+      }
+    });
+  }
   window.clearTimeout(updateKeyOverlay.clearId);
   updateKeyOverlay.clearId = window.setTimeout(() => {
     state.keys = [];

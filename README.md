@@ -15,6 +15,9 @@ saved video after recording.
 - Smart Director v2 auto zoom with telemetry capture, cue scoring, offline camera-plan compilation, render QA, and smooth keyframed playback.
 - Smart focus modes for Smart Director, cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Director style presets for subtle, balanced, or cinematic camera plans.
+- Editable Director Plan controls for hiding shots, adjusting zoom intensity, and changing shot duration after a take.
+- Separate telemetry timelines for cursor, click, keyboard, motion, accessibility context, proxy preview metadata, and render QA.
+- Vector cursor/highlight rendering that follows the compiled camera transform instead of being tied to raw captured pixels.
 - Master Smart Features toggle plus individual toggles for:
   - Auto zoom
   - Cursor spotlight
@@ -108,14 +111,28 @@ smartie-my-take.smartie-project/
   manifest.json
   recording.webm
   attention.timeline.json
+  cursor.timeline.json
+  click.timeline.json
+  keyboard.timeline.json
+  motion.timeline.json
+  accessibility.timeline.json
+  proxy.timeline.json
   camera.plan.json
+  render.qa.json
+  proxy-preview.jpg
   recording.smartie.json
 ```
 
-The attention timeline stores cursor, click, keyboard, marker, and director
-cues. The camera plan stores the compiled smart zoom shots, keyframes, QA
-warnings, and editable segment metadata so Smartie can evolve into a full
-timeline editor without changing the capture format.
+The attention timeline stores high-level cues. The separate telemetry timelines
+store source cursor, click, keyboard, motion, semantic/accessibility context,
+proxy preview metadata, and render QA. The camera plan stores compiled smart
+zoom shots, keyframes, QA warnings, and editable segment metadata so Smartie can
+edit the director plan without changing the capture format.
+
+On Linux/X11, semantic context can include the active window title through
+`xdotool` when available. On Wayland, Smartie records the limitation in
+`accessibility.timeline.json` until a native portal/accessibility helper is
+added.
 
 ## Package
 

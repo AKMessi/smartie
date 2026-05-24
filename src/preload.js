@@ -3,7 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('smartie', {
   listSources: () => ipcRenderer.invoke('smartie:list-sources'),
   getPointer: () => ipcRenderer.invoke('smartie:get-pointer'),
+  getSemanticContext: () => ipcRenderer.invoke('smartie:get-semantic-context'),
   saveRecording: (payload) => ipcRenderer.invoke('smartie:save-recording', payload),
+  saveCameraPlan: (payload) => ipcRenderer.invoke('smartie:save-camera-plan', payload),
   saveSnapshot: (payload) => ipcRenderer.invoke('smartie:save-snapshot', payload),
   revealFile: (filePath) => ipcRenderer.invoke('smartie:reveal-file', filePath),
   getDefaultOutputDir: () => ipcRenderer.invoke('smartie:get-default-output-dir'),

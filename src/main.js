@@ -1,11 +1,13 @@
 const { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, screen, shell } = require('electron');
-const { spawn } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { promisify } = require('node:util');
 const ffmpegPath = require('ffmpeg-static');
 
 const APP_TITLE = 'Smartie';
 const IS_SMOKE_TEST = process.argv.includes('--smoke-test');
+const execFileAsync = promisify(execFile);
 
 app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
 
@@ -307,7 +309,47 @@ function normalizeCameraPlan(cameraPlan) {
   };
 }
 
-function buildSmartieProjectManifest(filePath, metadata, attentionTimeline, cameraPlan, recordingFileName, projectFileMode) {
+function normalizeTimelineArtifact(payload, schema, eventsKey = 'events') {
+  const value = payload && typeof payload === 'object' ? payload : {};
+  const events = Array.isArray(value[eventsKey])
+    ? value[eventsKey]
+    : Array.isArray(value.events)
+      ? value.events
+      : Array.isArray(payload)
+        ? payload
+        : [];
+
+  return {
+    schema: typeof value.schema === 'string' ? value.schema : schema,
+    version: finiteNumber(value.version, 1),
+    generated_at: typeof value.generated_at === 'string' ? value.generated_at : new Date().toISOString(),
+    source: value.source && typeof value.source === 'object' ? value.source : {},
+    stats: value.stats && typeof value.stats === 'object' ? value.stats : {},
+    [eventsKey]: events
+  };
+}
+
+function normalizeProjectArtifacts(projectArtifacts) {
+  const payload = projectArtifacts && typeof projectArtifacts === 'object' ? projectArtifacts : {};
+
+  return {
+    cursorTimeline: normalizeTimelineArtifact(payload.cursorTimeline, 'smartie.cursor_timeline.v1', 'samples'),
+    clickTimeline: normalizeTimelineArtifact(payload.clickTimeline, 'smartie.click_timeline.v1'),
+    keyboardTimeline: normalizeTimelineArtifact(payload.keyboardTimeline, 'smartie.keyboard_timeline.v1'),
+    motionTimeline: normalizeTimelineArtifact(payload.motionTimeline, 'smartie.motion_timeline.v1'),
+    accessibilityTimeline: normalizeTimelineArtifact(payload.accessibilityTimeline, 'smartie.accessibility_timeline.v1'),
+    proxyTimeline: normalizeTimelineArtifact(payload.proxyTimeline, 'smartie.proxy_timeline.v1', 'proxies'),
+    renderQa: payload.renderQa && typeof payload.renderQa === 'object'
+      ? payload.renderQa
+      : { schema: 'smartie.render_qa.v1', ok: true, warnings: [], errors: [], metrics: {} }
+  };
+}
+
+function timelineCount(timeline, key = 'events') {
+  return Array.isArray(timeline?.[key]) ? timeline[key].length : 0;
+}
+
+function buildSmartieProjectManifest(filePath, metadata, attentionTimeline, cameraPlan, projectArtifacts, recordingFileName, projectFileMode, proxyPreview = null) {
   const capture = metadata?.capture || {};
   const title = metadata?.take?.title || path.basename(filePath, path.extname(filePath));
   const durationMs = finiteNumber(metadata?.durationMs, null);
@@ -329,7 +371,14 @@ function buildSmartieProjectManifest(filePath, metadata, attentionTimeline, came
     files: {
       recording: recordingFileName,
       attention_timeline: 'attention.timeline.json',
+      cursor_timeline: 'cursor.timeline.json',
+      click_timeline: 'click.timeline.json',
+      keyboard_timeline: 'keyboard.timeline.json',
+      motion_timeline: 'motion.timeline.json',
+      accessibility_timeline: 'accessibility.timeline.json',
+      proxy_timeline: 'proxy.timeline.json',
       camera_plan: 'camera.plan.json',
+      render_qa: 'render.qa.json',
       metadata: 'recording.smartie.json'
     },
     smartie: {
@@ -350,6 +399,19 @@ function buildSmartieProjectManifest(filePath, metadata, attentionTimeline, came
       keyframes: Array.isArray(cameraPlan.keyframes) ? cameraPlan.keyframes.length : 0,
       qa: cameraPlan.qa || {}
     },
+    telemetry: {
+      cursor_samples: timelineCount(projectArtifacts.cursorTimeline, 'samples'),
+      click_events: timelineCount(projectArtifacts.clickTimeline),
+      keyboard_events: timelineCount(projectArtifacts.keyboardTimeline),
+      motion_events: timelineCount(projectArtifacts.motionTimeline),
+      accessibility_events: timelineCount(projectArtifacts.accessibilityTimeline)
+    },
+    proxy: {
+      previews: timelineCount(projectArtifacts.proxyTimeline, 'proxies'),
+      preview_image: proxyPreview ? path.basename(proxyPreview.path) : null,
+      preview_status: proxyPreview ? proxyPreview.status : 'not-created'
+    },
+    render_qa: projectArtifacts.renderQa,
     project_file_mode: projectFileMode
   };
 }
@@ -366,43 +428,143 @@ async function linkOrCopyRecording(sourcePath, targetPath) {
   }
 }
 
-async function writeSmartieProject(filePath, metadata, attentionTimeline, cameraPlan) {
+function createProxyPreview(inputPath, outputPath) {
+  const binaryPath = resolvedFfmpegPath();
+  if (!binaryPath) {
+    throw new Error('Bundled FFmpeg is unavailable on this platform.');
+  }
+
+  const args = [
+    '-y',
+    '-ss',
+    '00:00:00.300',
+    '-i',
+    inputPath,
+    '-frames:v',
+    '1',
+    '-vf',
+    'scale=640:-2',
+    '-q:v',
+    '4',
+    outputPath
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(binaryPath, args, {
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    let errorOutput = '';
+
+    child.stderr.on('data', (chunk) => {
+      errorOutput += chunk.toString();
+    });
+
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`FFmpeg proxy preview exited with code ${code}: ${errorOutput.slice(-1000)}`));
+    });
+  });
+}
+
+async function writeJsonFile(filePath, payload) {
+  await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+async function writeSmartieProject(filePath, metadata, attentionTimeline, cameraPlan, projectArtifacts) {
   const projectPath = smartieProjectPathFor(filePath);
   const recordingExtension = path.extname(filePath) || '.webm';
   const recordingFileName = `recording${recordingExtension}`;
   const projectRecordingPath = path.join(projectPath, recordingFileName);
   const normalizedTimeline = normalizeAttentionTimeline(attentionTimeline);
   const normalizedCameraPlan = normalizeCameraPlan(cameraPlan);
+  const normalizedArtifacts = normalizeProjectArtifacts(projectArtifacts);
 
   await fs.mkdir(projectPath, { recursive: true });
   const projectFileMode = await linkOrCopyRecording(filePath, projectRecordingPath);
+  const proxyPreviewPath = path.join(projectPath, 'proxy-preview.jpg');
+  let proxyPreview = null;
+  try {
+    await createProxyPreview(filePath, proxyPreviewPath);
+    proxyPreview = {
+      status: 'created',
+      path: proxyPreviewPath
+    };
+  } catch (error) {
+    proxyPreview = {
+      status: 'failed',
+      path: proxyPreviewPath,
+      error: error.message || 'Proxy preview failed'
+    };
+    console.warn('Could not create Smartie proxy preview.', error);
+  }
+
   const manifest = buildSmartieProjectManifest(
     filePath,
     metadata,
     normalizedTimeline,
     normalizedCameraPlan,
+    normalizedArtifacts,
     recordingFileName,
-    projectFileMode
+    projectFileMode,
+    proxyPreview
   );
 
   const manifestPath = path.join(projectPath, 'manifest.json');
   const attentionTimelinePath = path.join(projectPath, 'attention.timeline.json');
+  const cursorTimelinePath = path.join(projectPath, 'cursor.timeline.json');
+  const clickTimelinePath = path.join(projectPath, 'click.timeline.json');
+  const keyboardTimelinePath = path.join(projectPath, 'keyboard.timeline.json');
+  const motionTimelinePath = path.join(projectPath, 'motion.timeline.json');
+  const accessibilityTimelinePath = path.join(projectPath, 'accessibility.timeline.json');
+  const proxyTimelinePath = path.join(projectPath, 'proxy.timeline.json');
   const cameraPlanPath = path.join(projectPath, 'camera.plan.json');
+  const renderQaPath = path.join(projectPath, 'render.qa.json');
   const projectMetadataPath = path.join(projectPath, 'recording.smartie.json');
 
-  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-  await fs.writeFile(attentionTimelinePath, `${JSON.stringify(normalizedTimeline, null, 2)}\n`, 'utf8');
-  await fs.writeFile(cameraPlanPath, `${JSON.stringify(normalizedCameraPlan, null, 2)}\n`, 'utf8');
-  await fs.writeFile(projectMetadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
+  normalizedArtifacts.proxyTimeline.proxies = [
+    ...(normalizedArtifacts.proxyTimeline.proxies || []),
+    {
+      kind: 'still-preview',
+      path: 'proxy-preview.jpg',
+      status: proxyPreview.status,
+      error: proxyPreview.error || null,
+      width: 640
+    }
+  ];
+
+  await writeJsonFile(manifestPath, manifest);
+  await writeJsonFile(attentionTimelinePath, normalizedTimeline);
+  await writeJsonFile(cursorTimelinePath, normalizedArtifacts.cursorTimeline);
+  await writeJsonFile(clickTimelinePath, normalizedArtifacts.clickTimeline);
+  await writeJsonFile(keyboardTimelinePath, normalizedArtifacts.keyboardTimeline);
+  await writeJsonFile(motionTimelinePath, normalizedArtifacts.motionTimeline);
+  await writeJsonFile(accessibilityTimelinePath, normalizedArtifacts.accessibilityTimeline);
+  await writeJsonFile(proxyTimelinePath, normalizedArtifacts.proxyTimeline);
+  await writeJsonFile(cameraPlanPath, normalizedCameraPlan);
+  await writeJsonFile(renderQaPath, normalizedArtifacts.renderQa);
+  await writeJsonFile(projectMetadataPath, metadata);
 
   return {
     projectPath,
     manifestPath,
     attentionTimelinePath,
+    cursorTimelinePath,
+    clickTimelinePath,
+    keyboardTimelinePath,
+    motionTimelinePath,
+    accessibilityTimelinePath,
+    proxyTimelinePath,
     cameraPlanPath,
+    renderQaPath,
     projectMetadataPath,
     projectRecordingPath,
-    projectFileMode
+    projectFileMode,
+    proxyPreviewPath: proxyPreview.status === 'created' ? proxyPreviewPath : null
   };
 }
 
@@ -497,7 +659,7 @@ function muxAudioIntoWebm(videoPath, audioSourcePath, outputPath) {
   });
 }
 
-async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm', audioSourceBytes = null, attentionTimeline = null, cameraPlan = null) {
+async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'webm', audioSourceBytes = null, attentionTimeline = null, cameraPlan = null, projectArtifacts = null) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   if (audioSourceBytes) {
     const tempBase = `${filePath}.${Date.now()}`;
@@ -544,7 +706,7 @@ async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'we
   let project = null;
   let projectError = null;
   try {
-    project = await writeSmartieProject(filePath, metadata, attentionTimeline, cameraPlan);
+    project = await writeSmartieProject(filePath, metadata, attentionTimeline, cameraPlan, projectArtifacts);
   } catch (error) {
     projectError = error.message || 'Could not write Smartie project.';
     console.warn('Could not write Smartie project.', error);
@@ -558,7 +720,15 @@ async function writeRecordingFiles(filePath, bytes, metadata, exportFormat = 'we
     projectPath: project ? project.projectPath : null,
     projectManifestPath: project ? project.manifestPath : null,
     attentionTimelinePath: project ? project.attentionTimelinePath : null,
+    cursorTimelinePath: project ? project.cursorTimelinePath : null,
+    clickTimelinePath: project ? project.clickTimelinePath : null,
+    keyboardTimelinePath: project ? project.keyboardTimelinePath : null,
+    motionTimelinePath: project ? project.motionTimelinePath : null,
+    accessibilityTimelinePath: project ? project.accessibilityTimelinePath : null,
+    proxyTimelinePath: project ? project.proxyTimelinePath : null,
     cameraPlanPath: project ? project.cameraPlanPath : null,
+    renderQaPath: project ? project.renderQaPath : null,
+    proxyPreviewPath: project ? project.proxyPreviewPath : null,
     projectRecordingPath: project ? project.projectRecordingPath : null,
     projectFileMode: project ? project.projectFileMode : null,
     projectError
@@ -592,8 +762,76 @@ ipcMain.handle('smartie:get-pointer', () => ({
   displays: getDisplaySnapshot()
 }));
 
+async function getActiveWindowSnapshot() {
+  const snapshot = {
+    capturedAt: new Date().toISOString(),
+    platform: process.platform,
+    sessionType: process.env.XDG_SESSION_TYPE || null,
+    available: false,
+    provider: null,
+    title: null,
+    pid: null,
+    error: null
+  };
+
+  if (process.platform !== 'linux' || process.env.XDG_SESSION_TYPE === 'wayland') {
+    snapshot.error = process.env.XDG_SESSION_TYPE === 'wayland'
+      ? 'Active window lookup is unavailable from Electron on Wayland without a native portal helper.'
+      : 'Active window lookup is only implemented for Linux/X11.';
+    return snapshot;
+  }
+
+  try {
+    const activeWindow = await execFileAsync('xdotool', ['getactivewindow'], { timeout: 650 });
+    const windowId = activeWindow.stdout.trim();
+    if (!windowId) {
+      snapshot.error = 'xdotool did not return an active window id.';
+      return snapshot;
+    }
+
+    const [nameResult, pidResult] = await Promise.allSettled([
+      execFileAsync('xdotool', ['getwindowname', windowId], { timeout: 650 }),
+      execFileAsync('xdotool', ['getwindowpid', windowId], { timeout: 650 })
+    ]);
+
+    snapshot.available = true;
+    snapshot.provider = 'xdotool';
+    snapshot.windowId = windowId;
+    if (nameResult.status === 'fulfilled') {
+      snapshot.title = nameResult.value.stdout.trim() || null;
+    }
+    if (pidResult.status === 'fulfilled') {
+      const pid = Number(pidResult.value.stdout.trim());
+      snapshot.pid = Number.isFinite(pid) ? pid : null;
+    }
+  } catch (error) {
+    snapshot.error = error.message || 'Active window lookup failed.';
+  }
+
+  return snapshot;
+}
+
+ipcMain.handle('smartie:get-semantic-context', async () => ({
+  activeWindow: await getActiveWindowSnapshot(),
+  displays: getDisplaySnapshot()
+}));
+
+ipcMain.handle('smartie:save-camera-plan', async (_event, payload) => {
+  const { projectPath, cameraPlan } = payload || {};
+  if (!projectPath || !cameraPlan) {
+    throw new Error('Project path and camera plan are required.');
+  }
+
+  const resolvedProjectPath = path.resolve(projectPath);
+  const cameraPlanPath = path.join(resolvedProjectPath, 'camera.plan.json');
+  await writeJsonFile(cameraPlanPath, normalizeCameraPlan(cameraPlan));
+  return {
+    cameraPlanPath
+  };
+});
+
 ipcMain.handle('smartie:save-recording', async (_event, payload) => {
-  const { bytes, audioSourceBytes, suggestedName, saveMode, outputDir, metadata, exportFormat, attentionTimeline, cameraPlan } = payload || {};
+  const { bytes, audioSourceBytes, suggestedName, saveMode, outputDir, metadata, exportFormat, attentionTimeline, cameraPlan, projectArtifacts } = payload || {};
   if (!bytes) {
     throw new Error('No recording data received.');
   }
@@ -601,7 +839,7 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
   if (saveMode === 'auto') {
     const directory = outputDir || defaultRecordingDirectory();
     const filePath = path.join(directory, suggestedName || path.basename(defaultRecordingPath()));
-    const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan);
+    const saved = await writeRecordingFiles(filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan, projectArtifacts);
     return {
       canceled: false,
       ...saved
@@ -627,7 +865,7 @@ ipcMain.handle('smartie:save-recording', async (_event, payload) => {
     return { canceled: true };
   }
 
-  const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan);
+  const saved = await writeRecordingFiles(result.filePath, bytes, metadata, exportFormat, audioSourceBytes, attentionTimeline, cameraPlan, projectArtifacts);
   return {
     canceled: false,
     ...saved

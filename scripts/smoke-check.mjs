@@ -83,6 +83,10 @@ for (const feature of [
   'rememberRecording',
   'renderRecentRecordings',
   'renderDirectorPlan',
+  'applyCameraPlanEdit',
+  'persistCameraPlanEdit',
+  'resetTelemetry',
+  'buildProjectArtifacts',
   'updateFrameHealth',
   'renderHealth',
   'micGain',
@@ -114,6 +118,7 @@ for (const feature of [
   'privacyBlur',
   'drawPrivacyBlur',
   'drawCursorTrail',
+  'vectorLayerPoint',
   'outputLayout',
   'canvasSizeForSettings',
   'canvasPointFromEvent',
@@ -141,6 +146,11 @@ for (const feature of [
   'captureSmartTimelineFrame',
   'startSmartTimeline',
   'stopSmartTimeline',
+  'startSemanticPolling',
+  'stopSemanticPolling',
+  'recordCursorTelemetry',
+  'recordClickTelemetry',
+  'recordMotionTelemetry',
   'drawSmartTimelineFrame',
   'renderSmartEffectsVideo',
   'waitForMediaEvent',
@@ -160,11 +170,15 @@ for (const feature of [
   'resolveDirectorOverlaps',
   'buildCameraKeyframes',
   'validateCameraPlan',
+  'buildRenderQa',
   'cameraFrameAt',
   'smartie.camera_plan.v1',
+  'smartie.cursor_timeline.v1',
+  'smartie.render_qa.v1',
   'audioSourceBytes',
   'attentionTimeline',
   'cameraPlan',
+  'projectArtifacts',
   'recordingMimeType',
   'recordingSettings',
   'createRecordingCanvasStream',
@@ -180,14 +194,14 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieProject', 'smartieProjectPathFor', 'smartie.project.v1', 'attention.timeline.json', 'camera.plan.json', 'projectFileMode']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieProject', 'smartieProjectPathFor', 'smartie.project.v1', 'attention.timeline.json', 'cursor.timeline.json', 'click.timeline.json', 'keyboard.timeline.json', 'motion.timeline.json', 'accessibility.timeline.json', 'proxy.timeline.json', 'camera.plan.json', 'render.qa.json', 'projectFileMode', 'getActiveWindowSnapshot', 'createProxyPreview', 'save-camera-plan']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }
 }
 
 const preload = readFileSync(join(root, 'src/preload.js'), 'utf8');
-for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir', 'setWindowHidden', 'toggleWindowVisibility', 'saveSnapshot']) {
+for (const feature of ['getShortcuts', 'onShortcut', 'chooseOutputDir', 'getDefaultOutputDir', 'setWindowHidden', 'toggleWindowVisibility', 'saveSnapshot', 'getSemanticContext', 'saveCameraPlan']) {
   if (!preload.includes(feature)) {
     throw new Error(`Preload is missing shortcut bridge: ${feature}`);
   }

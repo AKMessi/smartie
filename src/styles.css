@@ -372,6 +372,10 @@ canvas {
   background: #13161b;
 }
 
+.plan-segment.disabled {
+  opacity: 0.56;
+}
+
 .plan-segment strong,
 .plan-segment span {
   display: block;
@@ -397,6 +401,18 @@ canvas {
   font-size: 11px;
   font-style: normal;
   font-variant-numeric: tabular-nums;
+}
+
+.plan-actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.plan-actions .mini-button {
+  min-width: 0;
+  padding: 0 6px;
 }
 
 .toggle-grid {
