@@ -2004,8 +2004,10 @@ function mapPointerToCapture(pointerPayload) {
     state.trail = state.trail.slice(lowLatencyMode(settings) ? -12 : -Math.min(28, performanceProfile(settings).maxTrailSamples));
   }
 
-  if (velocity > 0.072) {
-    recordSmartMoment(settings, 'pointer emphasis', x, y);
+  const precisePointer = state.telemetry.nativeQuality?.tier === 'precision';
+  const safePointerTarget = x > 0.015 && y > 0.015 && x < 0.985 && y < 0.985;
+  if (velocity > 0.11 && precisePointer && safePointerTarget && recordingElapsedMs() > 1200) {
+    recordSmartMoment(settings, 'cursor movement', x, y);
   }
 }
 
@@ -3724,6 +3726,48 @@ function roundTo(value, digits = 3) {
   return Math.round(finiteNumber(value, 0) * factor) / factor;
 }
 
+function cueText(value) {
+  return String(value || '').toLowerCase();
+}
+
+function isSyntheticPointerMoment(source, reason, type = '') {
+  const normalizedSource = cueText(source);
+  const normalizedReason = cueText(reason);
+  const normalizedType = cueText(type);
+  return (normalizedSource === 'marker' || normalizedSource === 'auto_marker' || normalizedType === 'smart-marker')
+    && (
+      normalizedReason.includes('pointer emphasis')
+      || normalizedReason.includes('cursor movement')
+      || normalizedReason.includes('cursor intent')
+    );
+}
+
+function isTrustedClickCue(source, reason, type = '') {
+  const normalizedSource = cueText(source);
+  const normalizedReason = cueText(reason);
+  const normalizedType = cueText(type);
+  if (isSyntheticPointerMoment(source, reason, type)) {
+    return false;
+  }
+
+  return normalizedSource === 'pulse'
+    || normalizedSource === 'native-click'
+    || normalizedSource === 'native_click_telemetry'
+    || normalizedSource === 'click_telemetry'
+    || normalizedType === 'native-click'
+    || normalizedReason.includes('native compositor click')
+    || normalizedReason.includes('click pulse')
+    || normalizedReason.includes('manual click');
+}
+
+function isUntrustedEdgeTarget(source, reason, type, x, y) {
+  if (isTrustedClickCue(source, reason, type)) {
+    return false;
+  }
+
+  return finiteNumber(x, 0.5) <= 0.012 && finiteNumber(y, 0.5) <= 0.012;
+}
+
 function attentionCue(sample) {
   const attention = sample.attention || {};
   const source = String(attention.source || '').toLowerCase();
@@ -3734,8 +3778,12 @@ function attentionCue(sample) {
     return 'keyboard';
   }
 
-  if (source === 'pulse' || reason.includes('click') || reason.includes('emphasis')) {
+  if (isTrustedClickCue(source, reason)) {
     return 'click';
+  }
+
+  if (isSyntheticPointerMoment(source, reason)) {
+    return 'motion';
   }
 
   if (reason.includes('dwell') || reason.includes('hold') || source === 'lock') {
@@ -3798,6 +3846,8 @@ function buildTimelineAttentionEvent(sample, outputSize) {
   const frame = sample.frame || {};
   const pointer = sample.pointer || {};
   const cue = attentionCue(sample);
+  const source = attention.source || cue;
+  const reason = attention.reason || cue;
 
   if (cue === 'wide' && finiteNumber(frame.scale, 1) < 1.08) {
     return null;
@@ -3805,8 +3855,15 @@ function buildTimelineAttentionEvent(sample, outputSize) {
 
   const x = clamp01(finiteNumber(attention.x, finiteNumber(frame.x, finiteNumber(pointer.x, 0.5))));
   const y = clamp01(finiteNumber(attention.y, finiteNumber(frame.y, finiteNumber(pointer.y, 0.5))));
-  const scale = Math.max(1, finiteNumber(attention.scale, finiteNumber(frame.scale, 1)));
-  const confidence = clamp01(Math.max(
+  if (isUntrustedEdgeTarget(source, reason, cue, x, y)) {
+    return null;
+  }
+
+  const syntheticPointerMoment = isSyntheticPointerMoment(source, reason, cue);
+  const scale = syntheticPointerMoment
+    ? Math.min(1.26, Math.max(1, finiteNumber(attention.scale, finiteNumber(frame.scale, 1))))
+    : Math.max(1, finiteNumber(attention.scale, finiteNumber(frame.scale, 1)));
+  const confidence = syntheticPointerMoment ? Math.min(0.46, clamp01(finiteNumber(attention.confidence, 0.46))) : clamp01(Math.max(
     finiteNumber(attention.confidence, 0.5),
     finiteNumber(attention.score, 0.5),
     Math.min(1, (scale - 1) / 1.2)
@@ -3821,8 +3878,8 @@ function buildTimelineAttentionEvent(sample, outputSize) {
     confidence: roundTo(confidence, 3),
     duration_ms: attentionEventDurationMs(cue),
     scale: roundTo(scale, 4),
-    reason: attention.reason || cue,
-    source: attention.source || cue,
+    reason,
+    source: syntheticPointerMoment ? 'auto_marker' : source,
     output_width: outputSize.width,
     output_height: outputSize.height
   };
@@ -3838,6 +3895,10 @@ function pushAttentionEvent(events, event) {
   }
 
   if (!Number.isFinite(event.x) || !Number.isFinite(event.y)) {
+    return;
+  }
+
+  if (isUntrustedEdgeTarget(event.source, event.reason, event.type, event.x, event.y)) {
     return;
   }
 
@@ -4154,6 +4215,97 @@ function cursorDwellAttentionEvents(samples = [], durationMs = 0, settings = get
   return events.filter((event) => event.time_ms <= durationMs + 50);
 }
 
+function cursorSettleAttentionEvents(samples = [], durationMs = 0, settings = getSettings(), outputSize = canvasSizeForSettings(settings)) {
+  const sorted = samples
+    .filter((sample) => Number.isFinite(finiteNumber(sample.time_ms, NaN)))
+    .sort((a, b) => finiteNumber(a.time_ms, 0) - finiteNumber(b.time_ms, 0));
+  const events = [];
+  let movementStart = null;
+  let peak = null;
+  let lastEmittedAt = -Infinity;
+  const highVelocity = 0.032;
+  const settleVelocity = 0.014;
+
+  const emitSettle = (sample, index) => {
+    if (!movementStart || !peak) {
+      return;
+    }
+
+    const atMs = finiteNumber(sample.time_ms, 0);
+    const startedAtMs = finiteNumber(movementStart.time_ms, 0);
+    const travel = Math.hypot(
+      finiteNumber(sample.x, 0.5) - finiteNumber(movementStart.x, 0.5),
+      finiteNumber(sample.y, 0.5) - finiteNumber(movementStart.y, 0.5)
+    );
+    if (atMs - startedAtMs < 220 || travel < 0.045 || atMs - lastEmittedAt < 1500) {
+      return;
+    }
+
+    const lookahead = sorted
+      .slice(index, Math.min(sorted.length, index + 4))
+      .filter((candidate) => Math.abs(finiteNumber(candidate.velocity, 0)) <= settleVelocity * 1.6);
+    const anchor = lookahead.length > 0
+      ? lookahead.reduce((acc, candidate) => ({
+          x: acc.x + finiteNumber(candidate.x, finiteNumber(sample.x, 0.5)),
+          y: acc.y + finiteNumber(candidate.y, finiteNumber(sample.y, 0.5))
+        }), { x: 0, y: 0 })
+      : { x: finiteNumber(sample.x, 0.5), y: finiteNumber(sample.y, 0.5) };
+    const divisor = Math.max(1, lookahead.length);
+    const x = lookahead.length > 0 ? anchor.x / divisor : anchor.x;
+    const y = lookahead.length > 0 ? anchor.y / divisor : anchor.y;
+    if (isUntrustedEdgeTarget('cursor_settle_telemetry', 'cursor settle telemetry', 'dwell', x, y)) {
+      return;
+    }
+
+    const peakVelocity = Math.abs(finiteNumber(peak.velocity, highVelocity));
+    const confidence = clamp(0.78 + Math.min(0.16, peakVelocity * 1.3) + Math.min(0.08, travel * 0.4), 0.78, 0.94);
+    events.push({
+      time: roundTo(atMs / 1000, 3),
+      time_ms: Math.round(atMs),
+      x: roundTo(clamp01(x), 5),
+      y: roundTo(clamp01(y), 5),
+      type: 'dwell',
+      confidence,
+      duration_ms: clamp(1280 + travel * 1400, 1280, 2200),
+      scale: fallbackAttentionScale(settings, confidence, Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.76)),
+      reason: 'cursor settled after movement',
+      source: 'cursor_settle_telemetry',
+      output_width: outputSize.width,
+      output_height: outputSize.height
+    });
+    lastEmittedAt = atMs;
+  };
+
+  sorted.forEach((sample, index) => {
+    const velocity = Math.abs(finiteNumber(sample.velocity, 0));
+    const x = finiteNumber(sample.x, NaN);
+    const y = finiteNumber(sample.y, NaN);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      movementStart = null;
+      peak = null;
+      return;
+    }
+
+    if (velocity >= highVelocity) {
+      if (!movementStart || finiteNumber(sample.time_ms, 0) - finiteNumber(movementStart.time_ms, 0) > 1800) {
+        movementStart = sample;
+        peak = sample;
+      } else if (velocity > Math.abs(finiteNumber(peak?.velocity, 0))) {
+        peak = sample;
+      }
+      return;
+    }
+
+    if (movementStart && velocity <= settleVelocity) {
+      emitSettle(sample, index);
+      movementStart = null;
+      peak = null;
+    }
+  });
+
+  return events.filter((event) => event.time_ms <= durationMs + 50);
+}
+
 function appendTelemetryAttentionEvents(events, timelinePlan, outputSize) {
   const settings = timelinePlan.settings;
   const durationMs = Math.max(0, finiteNumber(timelinePlan.durationMs, 0));
@@ -4173,19 +4325,30 @@ function appendTelemetryAttentionEvents(events, timelinePlan, outputSize) {
   const existingStrongEvents = events.filter((event) => event.type !== 'wide').length;
   const clickEvents = Array.isArray(telemetry.clicks) ? telemetry.clicks : [];
   for (const click of clickEvents.slice(0, 36)) {
+    if (isSyntheticPointerMoment('marker', click.reason || click.type, click.type)) {
+      continue;
+    }
+
     const atMs = finiteNumber(click.time_ms, finiteNumber(click.time, 0) * 1000);
+    const clickX = roundTo(clamp01(finiteNumber(click.x, 0.5)), 5);
+    const clickY = roundTo(clamp01(finiteNumber(click.y, 0.5)), 5);
+    const source = click.type === 'native-click' ? 'native_click_telemetry' : 'click_telemetry';
+    if (isUntrustedEdgeTarget(source, click.reason || click.type || 'click telemetry', click.type, clickX, clickY)) {
+      continue;
+    }
+
     const confidence = clamp01(finiteNumber(click.confidence, 0.92));
     pushTelemetryAttentionEvent(events, {
       time: roundTo(atMs / 1000, 3),
       time_ms: Math.round(atMs),
-      x: roundTo(clamp01(finiteNumber(click.x, 0.5)), 5),
-      y: roundTo(clamp01(finiteNumber(click.y, 0.5)), 5),
+      x: clickX,
+      y: clickY,
       type: 'click',
       confidence: click.type === 'native-click' || click.source ? Math.max(confidence, 0.96) : confidence,
       duration_ms: click.type === 'native-click' ? 760 : 620,
       scale: fallbackAttentionScale(settings, confidence, click.type === 'native-click' ? null : Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.74)),
       reason: click.reason || click.type || 'click telemetry',
-      source: click.type === 'native-click' ? 'native_click_telemetry' : 'click_telemetry',
+      source,
       output_width: outputSize.width,
       output_height: outputSize.height
     }, stats, { minGapMs: 180, minDistance: 0.03 });
@@ -4244,6 +4407,11 @@ function appendTelemetryAttentionEvents(events, timelinePlan, outputSize) {
   }
 
   if (stats.cursor.usable) {
+    for (const settle of cursorSettleAttentionEvents(telemetry.cursor, durationMs, settings, outputSize)
+      .slice(0, Math.max(5, Math.round(durationMs / 6500)))) {
+      pushTelemetryAttentionEvent(events, settle, stats, { minGapMs: 1400, minDistance: 0.055 });
+    }
+
     for (const dwell of cursorDwellAttentionEvents(telemetry.cursor, durationMs, settings, outputSize)
       .slice(0, Math.max(4, Math.round(durationMs / 8000)))) {
       pushTelemetryAttentionEvent(events, dwell, stats, { minGapMs: 1800, minDistance: 0.06 });
@@ -4417,6 +4585,10 @@ function buildAttentionTimeline(timelinePlan, outputSize) {
   }
 
   for (const marker of timelinePlan.markers || []) {
+    if (marker.kind !== 'manual' && isSyntheticPointerMoment('marker', marker.reason || marker.label || marker.kind, marker.kind)) {
+      continue;
+    }
+
     pushAttentionEvent(events, {
       time: roundTo(finiteNumber(marker.atMs, 0) / 1000, 3),
       time_ms: Math.round(finiteNumber(marker.atMs, 0)),
@@ -4527,12 +4699,16 @@ function eventSourceScore(source) {
     native_click_telemetry: 1,
     'native-click': 1,
     click_telemetry: 0.94,
+    cursor_settle_telemetry: 0.92,
     keyboard_telemetry: 0.9,
     semantic_window_telemetry: 0.84,
     cursor_dwell_telemetry: 0.84,
     native_pointer_telemetry: 0.78,
     cursor_telemetry: 0.7,
+    pointer: 0.52,
     visual_motion_fallback: 0.58,
+    auto_marker: 0.38,
+    marker: 0.38,
     director_failsafe: 0.52
   }[source] || 0.66;
 }
@@ -4601,15 +4777,101 @@ function boundedCameraPoint(x, y, scale) {
   };
 }
 
+function isTransientDirectorCandidate(candidate) {
+  const source = cueText(candidate?.source);
+  const reason = cueText(candidate?.reason);
+  const cue = cueText(candidate?.cue || candidate?.type);
+  return source === 'auto_marker'
+    || isSyntheticPointerMoment(source, reason, cue)
+    || source === 'visual_motion_fallback'
+    || source === 'cursor_telemetry'
+    || source === 'pointer' && (cue === 'motion' || reason.includes('cursor intent'));
+}
+
+function isStableDirectorCandidate(candidate) {
+  const source = cueText(candidate?.source);
+  return source === 'native_click_telemetry'
+    || source === 'native-click'
+    || source === 'click_telemetry'
+    || source === 'cursor_settle_telemetry'
+    || source === 'cursor_dwell_telemetry'
+    || source === 'keyboard_telemetry'
+    || source === 'semantic_window_telemetry';
+}
+
+function directorAnchorStrength(candidate) {
+  if (!candidate) {
+    return 0;
+  }
+
+  let strength = finiteNumber(candidate.score, 0)
+    + cueRank(candidate.cue) * 0.045
+    + eventSourceScore(candidate.source) * 0.32
+    + clamp01(finiteNumber(candidate.confidence, 0)) * 0.16;
+  if (isStableDirectorCandidate(candidate)) {
+    strength += 0.36;
+  }
+  if (isTransientDirectorCandidate(candidate)) {
+    strength -= 0.32;
+  }
+
+  return strength;
+}
+
+function mergeDirectorTarget(previous, candidate, previousWeight, nextWeight) {
+  const previousStrength = directorAnchorStrength(previous);
+  const nextStrength = directorAnchorStrength(candidate);
+  if (nextStrength >= previousStrength + 0.12 || isStableDirectorCandidate(candidate) && !isStableDirectorCandidate(previous)) {
+    return {
+      x: candidate.x,
+      y: candidate.y,
+      source: candidate.source,
+      reason: candidate.reason,
+      cue: candidate.cue
+    };
+  }
+
+  if (previousStrength >= nextStrength + 0.2 || isStableDirectorCandidate(previous) && isTransientDirectorCandidate(candidate)) {
+    return {
+      x: previous.x,
+      y: previous.y,
+      source: previous.source,
+      reason: previous.reason,
+      cue: previous.cue
+    };
+  }
+
+  const totalWeight = Math.max(0.001, previousWeight + nextWeight);
+  return {
+    x: (previous.x * previousWeight + candidate.x * nextWeight) / totalWeight,
+    y: (previous.y * previousWeight + candidate.y * nextWeight) / totalWeight,
+    source: cueRank(candidate.cue) > cueRank(previous.cue) ? candidate.source : previous.source,
+    reason: cueRank(candidate.cue) > cueRank(previous.cue) ? candidate.reason : previous.reason,
+    cue: cueRank(candidate.cue) > cueRank(previous.cue) ? candidate.cue : previous.cue
+  };
+}
+
 function directorCandidateFromEvent(event, settings, profile, durationMs) {
   const cue = String(event.type || event.cue || 'attention').replace(/[-\s]+/g, '_');
   if (cue === 'wide') {
     return null;
   }
 
+  if (isUntrustedEdgeTarget(event.source || cue, event.reason || cue, cue, event.x, event.y)) {
+    return null;
+  }
+
   const confidence = clamp01(finiteNumber(event.confidence, 0.5));
   const sourceScore = eventSourceScore(event.source || cue);
-  const score = roundTo(confidence * 0.58 + cueScore(cue) * 0.27 + sourceScore * 0.15, 3);
+  let score = confidence * 0.58 + cueScore(cue) * 0.27 + sourceScore * 0.15;
+  if (isSyntheticPointerMoment(event.source, event.reason, cue)) {
+    score *= 0.42;
+  } else if (cueText(event.source) === 'pointer' && cue === 'motion' && cueText(event.reason).includes('cursor intent')) {
+    score *= 0.72;
+  } else if (cueText(event.source) === 'visual_motion_fallback') {
+    score *= 0.78;
+  }
+  score = roundTo(score, 3);
   if (score < profile.threshold) {
     return null;
   }
@@ -4663,19 +4925,19 @@ function mergeDirectorCandidates(candidates, profile) {
     if (gapMs <= profile.mergeGapMs && distance <= 0.16 && mergedDurationMs <= profile.maxContinuousShotMs) {
       const previousWeight = previous.score * previous.sourceCount;
       const nextWeight = candidate.score * candidate.sourceCount;
-      const totalWeight = Math.max(0.001, previousWeight + nextWeight);
+      const target = mergeDirectorTarget(previous, candidate, previousWeight, nextWeight);
       previous.endMs = mergedEndMs;
-      previous.x = roundTo((previous.x * previousWeight + candidate.x * nextWeight) / totalWeight, 5);
-      previous.y = roundTo((previous.y * previousWeight + candidate.y * nextWeight) / totalWeight, 5);
+      previous.x = roundTo(target.x, 5);
+      previous.y = roundTo(target.y, 5);
       previous.scale = roundTo(Math.max(previous.scale, candidate.scale), 4);
       previous.score = roundTo(Math.max(previous.score, candidate.score, (previous.score + candidate.score) / 2), 3);
       previous.confidence = roundTo(Math.max(previous.confidence, candidate.confidence), 3);
       previous.sourceCount += candidate.sourceCount;
       previous.merged = true;
-      if (cueRank(candidate.cue) > cueRank(previous.cue)) {
-        previous.cue = candidate.cue;
-        previous.reason = candidate.reason;
-        previous.source = candidate.source;
+      if (target.source) {
+        previous.cue = target.cue;
+        previous.reason = target.reason;
+        previous.source = target.source;
       }
       continue;
     }
@@ -4721,10 +4983,21 @@ function resolveDirectorOverlaps(candidates, profile) {
     const mergedEndMs = Math.max(previous.endMs, candidate.endMs);
     const mergedDurationMs = mergedEndMs - previous.startMs;
     if (distance <= 0.13 && mergedDurationMs <= profile.maxContinuousShotMs) {
+      const previousWeight = previous.score * previous.sourceCount;
+      const nextWeight = candidate.score * candidate.sourceCount;
+      const target = mergeDirectorTarget(previous, candidate, previousWeight, nextWeight);
       previous.endMs = mergedEndMs;
+      previous.x = roundTo(target.x, 5);
+      previous.y = roundTo(target.y, 5);
       previous.scale = roundTo(Math.max(previous.scale, candidate.scale), 4);
       previous.score = roundTo(Math.max(previous.score, candidate.score), 3);
+      previous.confidence = roundTo(Math.max(previous.confidence, candidate.confidence), 3);
       previous.sourceCount += candidate.sourceCount;
+      if (target.source) {
+        previous.cue = target.cue;
+        previous.reason = target.reason;
+        previous.source = target.source;
+      }
       previous.merged = true;
       continue;
     }

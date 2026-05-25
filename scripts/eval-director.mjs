@@ -111,6 +111,83 @@ function fallbackAttentionScale(settings, confidence, maxScale = null) {
   return roundTo(clamp(1 + (requested - 1) * (0.42 + confidence * 0.38), 1.08, ceiling), 4);
 }
 
+function buildCursorSettleEvents(samples = [], durationMs = 0, settings = {}, output = { width: 1920, height: 1080 }) {
+  const sorted = samples
+    .filter((sample) => Number.isFinite(finiteNumber(sample.time_ms, NaN)))
+    .sort((a, b) => finiteNumber(a.time_ms, 0) - finiteNumber(b.time_ms, 0));
+  const events = [];
+  let movementStart = null;
+  let peak = null;
+  let lastEmittedAt = -Infinity;
+
+  sorted.forEach((sample, index) => {
+    const velocity = Math.abs(finiteNumber(sample.velocity, 0));
+    const x = finiteNumber(sample.x, NaN);
+    const y = finiteNumber(sample.y, NaN);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      movementStart = null;
+      peak = null;
+      return;
+    }
+
+    if (velocity >= 0.032) {
+      if (!movementStart || finiteNumber(sample.time_ms, 0) - finiteNumber(movementStart.time_ms, 0) > 1800) {
+        movementStart = sample;
+        peak = sample;
+      } else if (velocity > Math.abs(finiteNumber(peak?.velocity, 0))) {
+        peak = sample;
+      }
+      return;
+    }
+
+    if (!movementStart || velocity > 0.014) {
+      return;
+    }
+
+    const atMs = finiteNumber(sample.time_ms, 0);
+    const startedAtMs = finiteNumber(movementStart.time_ms, 0);
+    const travel = Math.hypot(x - finiteNumber(movementStart.x, 0.5), y - finiteNumber(movementStart.y, 0.5));
+    if (atMs - startedAtMs < 220 || travel < 0.045 || atMs - lastEmittedAt < 1500) {
+      movementStart = null;
+      peak = null;
+      return;
+    }
+
+    const lookahead = sorted
+      .slice(index, Math.min(sorted.length, index + 4))
+      .filter((candidate) => Math.abs(finiteNumber(candidate.velocity, 0)) <= 0.022);
+    const anchor = lookahead.length > 0
+      ? lookahead.reduce((acc, candidate) => ({
+          x: acc.x + finiteNumber(candidate.x, x),
+          y: acc.y + finiteNumber(candidate.y, y)
+        }), { x: 0, y: 0 })
+      : { x, y };
+    const divisor = Math.max(1, lookahead.length);
+    const anchorX = lookahead.length > 0 ? anchor.x / divisor : anchor.x;
+    const anchorY = lookahead.length > 0 ? anchor.y / divisor : anchor.y;
+    const peakVelocity = Math.abs(finiteNumber(peak?.velocity, 0.032));
+    const confidence = clamp(0.78 + Math.min(0.16, peakVelocity * 1.3) + Math.min(0.08, travel * 0.4), 0.78, 0.94);
+    events.push({
+      time_ms: Math.round(atMs),
+      x: roundTo(clamp01(anchorX), 5),
+      y: roundTo(clamp01(anchorY), 5),
+      type: 'dwell',
+      confidence,
+      duration_ms: clamp(1280 + travel * 1400, 1280, 2200),
+      scale: fallbackAttentionScale(settings, confidence, Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.76)),
+      reason: 'cursor settled after movement',
+      source: 'cursor_settle_telemetry',
+      output_width: output.width,
+      output_height: output.height
+    });
+    lastEmittedAt = atMs;
+    movementStart = null;
+    peak = null;
+  });
+
+  return events.filter((event) => event.time_ms <= durationMs + 50);
+}
+
 function buildFallbackEvents({ settings, durationMs, output, telemetry }) {
   const events = [];
   const stats = {
@@ -284,14 +361,94 @@ function cueScore(cue) {
   }[cue] || 0.62;
 }
 
+function cueText(value) {
+  return String(value || '').toLowerCase();
+}
+
+function isSyntheticPointerMoment(source, reason, type = '') {
+  const normalizedSource = cueText(source);
+  const normalizedReason = cueText(reason);
+  const normalizedType = cueText(type);
+  return (normalizedSource === 'marker' || normalizedSource === 'auto_marker' || normalizedType === 'smart-marker')
+    && (
+      normalizedReason.includes('pointer emphasis')
+      || normalizedReason.includes('cursor movement')
+      || normalizedReason.includes('cursor intent')
+    );
+}
+
+function isTrustedClickCue(source, reason, type = '') {
+  const normalizedSource = cueText(source);
+  const normalizedReason = cueText(reason);
+  const normalizedType = cueText(type);
+  if (isSyntheticPointerMoment(source, reason, type)) {
+    return false;
+  }
+
+  return normalizedSource === 'pulse'
+    || normalizedSource === 'native-click'
+    || normalizedSource === 'native_click_telemetry'
+    || normalizedSource === 'click_telemetry'
+    || normalizedType === 'native-click'
+    || normalizedReason.includes('native compositor click')
+    || normalizedReason.includes('click pulse')
+    || normalizedReason.includes('manual click');
+}
+
+function isUntrustedEdgeTarget(source, reason, type, x, y) {
+  if (isTrustedClickCue(source, reason, type)) {
+    return false;
+  }
+
+  return finiteNumber(x, 0.5) <= 0.012 && finiteNumber(y, 0.5) <= 0.012;
+}
+
+function eventSourceScore(source) {
+  return {
+    native_click_telemetry: 1,
+    'native-click': 1,
+    click_telemetry: 0.94,
+    cursor_settle_telemetry: 0.92,
+    keyboard_telemetry: 0.9,
+    semantic_window_telemetry: 0.84,
+    cursor_dwell_telemetry: 0.84,
+    native_pointer_telemetry: 0.78,
+    cursor_telemetry: 0.7,
+    pointer: 0.52,
+    visual_motion_fallback: 0.58,
+    auto_marker: 0.38,
+    marker: 0.38,
+    director_failsafe: 0.52
+  }[source] || 0.66;
+}
+
 function compileSegments(events, settings, durationMs) {
   const profile = directorStyleProfile(settings.directorStyle);
   const candidates = [];
+  let rejectedSyntheticMarkers = 0;
+  let rejectedEdgeTargets = 0;
 
   for (const event of events) {
     const cue = String(event.type || 'attention').replace(/[-\s]+/g, '_');
+    const source = event.source || cue;
+    const reason = event.reason || cue;
+    if (isSyntheticPointerMoment(source, reason, cue)) {
+      rejectedSyntheticMarkers += 1;
+      continue;
+    }
+    if (isUntrustedEdgeTarget(source, reason, cue, event.x, event.y)) {
+      rejectedEdgeTargets += 1;
+      continue;
+    }
+
     const confidence = clamp01(finiteNumber(event.confidence, 0.5));
-    const score = roundTo(confidence * 0.72 + cueScore(cue) * 0.28, 3);
+    let score = confidence * 0.58 + cueScore(cue) * 0.27 + eventSourceScore(source) * 0.15;
+    if (cueText(source) === 'pointer' && cue === 'motion' && cueText(reason).includes('cursor intent')) {
+      score *= 0.72;
+    } else if (cueText(source) === 'visual_motion_fallback') {
+      score *= 0.78;
+    }
+    score = roundTo(score, 3);
     if (score < profile.threshold) {
       continue;
     }
@@ -314,12 +471,13 @@ function compileSegments(events, settings, durationMs) {
       cue,
       confidence,
       score,
-      source: event.source || cue
+      source,
+      reason
     });
   }
 
   const maxSegments = Math.max(4, Math.round((durationMs / 60000) * profile.maxSegmentsPerMinute));
-  return candidates
+  const segments = candidates
     .sort((a, b) => b.score - a.score || a.startMs - b.startMs)
     .slice(0, maxSegments)
     .sort((a, b) => a.startMs - b.startMs)
@@ -327,6 +485,12 @@ function compileSegments(events, settings, durationMs) {
       ...segment,
       id: `eval-shot-${String(index + 1).padStart(3, '0')}`
     }));
+  segments.stats = {
+    rejectedSyntheticMarkers,
+    rejectedEdgeTargets,
+    candidateCount: candidates.length
+  };
+  return segments;
 }
 
 const projectPath = projectPathFromArg(process.argv[2]);
@@ -362,8 +526,12 @@ const telemetry = {
 const originalSegments = Array.isArray(camera.segments) ? camera.segments.length : 0;
 const primaryEvents = Array.isArray(attention.events) ? attention.events.length : 0;
 const fallback = buildFallbackEvents({ settings, durationMs, output, telemetry });
-const projectedEvents = primaryEvents > 0 ? attention.events : fallback.events;
+const settleEvents = buildCursorSettleEvents(telemetry.cursor, durationMs, settings, output);
+const projectedEvents = primaryEvents > 0
+  ? [...attention.events, ...settleEvents]
+  : [...fallback.events, ...settleEvents];
 const projectedSegments = compileSegments(projectedEvents, settings, durationMs);
+const projectedStats = projectedSegments.stats || {};
 
 const report = {
   project: projectPath,
@@ -387,6 +555,10 @@ const report = {
     fallbackStrategy: fallback.stats.strategy,
     fallbackEvents: fallback.stats.fallbackEvents,
     fallbackSources: fallback.stats.sources,
+    cursorSettleEvents: settleEvents.length,
+    rejectedSyntheticMarkers: projectedStats.rejectedSyntheticMarkers || 0,
+    rejectedEdgeTargets: projectedStats.rejectedEdgeTargets || 0,
+    candidateCount: projectedStats.candidateCount || projectedSegments.length,
     cameraSegments: projectedSegments.length,
     segments: projectedSegments
   }
