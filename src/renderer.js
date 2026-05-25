@@ -144,6 +144,7 @@ const state = {
     native: [],
     lastCursorSampleAt: -Infinity,
     lastMotionSampleAt: -Infinity,
+    lastNativeClickAt: -Infinity,
     lastAccessibilityTitle: '',
     nativeQuality: null,
     nativeSession: null
@@ -959,6 +960,7 @@ function resetTelemetry() {
     native: [],
     lastCursorSampleAt: -Infinity,
     lastMotionSampleAt: -Infinity,
+    lastNativeClickAt: -Infinity,
     lastAccessibilityTitle: '',
     nativeQuality: null,
     nativeSession: null
@@ -1554,6 +1556,25 @@ function pushSmartPulse(x = state.pointer.x, y = state.pointer.y) {
   recordClickTelemetry('pulse', x, y, 0.92, 'click pulse');
 }
 
+function pushSmartPulseAt(x = state.pointer.x, y = state.pointer.y, atMs = recordingElapsedMs(), source = 'native-click') {
+  if (!state.recording || state.paused) {
+    return;
+  }
+
+  const safeAtMs = Math.round(finiteNumber(atMs, recordingElapsedMs()));
+  if (safeAtMs - state.lastPulseAt < 180) {
+    return;
+  }
+
+  state.lastPulseAt = safeAtMs;
+  boundedPush(state.smartPulses, {
+    atMs: safeAtMs,
+    x: clamp01(x),
+    y: clamp01(y),
+    source
+  }, performanceProfile(state.recordingSettings || getSettings()).maxPulseSamples);
+}
+
 async function chooseOutputFolder() {
   const folder = await window.smartie.chooseOutputDir();
   if (!folder) {
@@ -1731,6 +1752,14 @@ function recordClickTelemetry(kind, x = state.pointer.x, y = state.pointer.y, co
   }
 
   const atMs = recordingElapsedMs();
+  recordClickTelemetryAt(kind, atMs, x, y, confidence, reason);
+}
+
+function recordClickTelemetryAt(kind, atMs, x = state.pointer.x, y = state.pointer.y, confidence = 0.88, reason = kind, source = null) {
+  if (!state.recording || state.paused) {
+    return;
+  }
+
   boundedPush(state.telemetry.clicks, {
     time: roundTo(atMs / 1000, 3),
     time_ms: Math.round(atMs),
@@ -1738,7 +1767,8 @@ function recordClickTelemetry(kind, x = state.pointer.x, y = state.pointer.y, co
     y: roundTo(clamp01(y), 5),
     type: kind,
     confidence: roundTo(clamp01(confidence), 3),
-    reason
+    reason,
+    source
   }, performanceProfile(state.recordingSettings || getSettings()).maxPulseSamples);
 }
 
@@ -1820,6 +1850,54 @@ function nativeTelemetryWindowPayload(snapshot) {
   };
 }
 
+function nativeEventRecordingMs(event, fallbackAtMs) {
+  const eventTime = Date.parse(event?.captured_at || '');
+  const sessionTime = Date.parse(state.telemetry.nativeSession?.started_at || '');
+  if (Number.isFinite(eventTime) && Number.isFinite(sessionTime)) {
+    return clamp(eventTime - sessionTime - finiteNumber(state.pausedDuration, 0), 0, recordingElapsedMs());
+  }
+
+  return fallbackAtMs;
+}
+
+function normalizeNativeScreenPoint(event) {
+  const screenX = finiteNumber(event?.screen_x, finiteNumber(event?.x, NaN));
+  const screenY = finiteNumber(event?.screen_y, finiteNumber(event?.y, NaN));
+  if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+    return null;
+  }
+
+  const display = selectedDisplay();
+  const pointer = {
+    provider: event.provider || 'native-helper',
+    precision: event.precision || 'compositor-global',
+    screen_x: Math.round(screenX),
+    screen_y: Math.round(screenY)
+  };
+  if (display?.bounds?.width > 0 && display?.bounds?.height > 0) {
+    pointer.x = roundTo(clamp01((screenX - display.bounds.x) / display.bounds.width), 5);
+    pointer.y = roundTo(clamp01((screenY - display.bounds.y) / display.bounds.height), 5);
+  }
+
+  return pointer;
+}
+
+function handleNativeClickEvent(event, enriched, atMs) {
+  if (!enriched.pointer || event.action && event.action !== 'press') {
+    return;
+  }
+
+  if (atMs - state.telemetry.lastNativeClickAt < 160) {
+    return;
+  }
+
+  state.telemetry.lastNativeClickAt = atMs;
+  const x = finiteNumber(enriched.pointer.x, state.pointer.x);
+  const y = finiteNumber(enriched.pointer.y, state.pointer.y);
+  recordClickTelemetryAt('native-click', atMs, x, y, 0.98, 'native compositor click', event.provider || enriched.provider || 'native');
+  pushSmartPulseAt(x, y, atMs, 'native-click');
+}
+
 function recordNativeTelemetrySnapshot(snapshot) {
   if (!state.recording || state.paused || !snapshot) {
     return;
@@ -1858,25 +1936,19 @@ function recordNativeTelemetrySnapshot(snapshot) {
 
   const helperEvents = Array.isArray(snapshot.events) ? snapshot.events : [];
   for (const event of helperEvents.slice(0, 80)) {
+    const eventAtMs = nativeEventRecordingMs(event, atMs);
     const enriched = {
       ...event,
-      time: roundTo(atMs / 1000, 3),
-      time_ms: Math.round(atMs),
+      time: roundTo(eventAtMs / 1000, 3),
+      time_ms: Math.round(eventAtMs),
       quality,
       helper_event: true
     };
-    if ((event.type === 'pointer' || event.type === 'cursor') && Number.isFinite(finiteNumber(event.screen_x, NaN)) && Number.isFinite(finiteNumber(event.screen_y, NaN))) {
-      const display = selectedDisplay();
-      enriched.pointer = {
-        provider: event.provider || 'native-helper',
-        precision: event.precision || 'compositor-global',
-        screen_x: Math.round(finiteNumber(event.screen_x, 0)),
-        screen_y: Math.round(finiteNumber(event.screen_y, 0))
-      };
-      if (display?.bounds?.width > 0 && display?.bounds?.height > 0) {
-        enriched.pointer.x = roundTo(clamp01((enriched.pointer.screen_x - display.bounds.x) / display.bounds.width), 5);
-        enriched.pointer.y = roundTo(clamp01((enriched.pointer.screen_y - display.bounds.y) / display.bounds.height), 5);
-      }
+    if (event.type === 'pointer' || event.type === 'cursor' || event.type === 'click') {
+      enriched.pointer = normalizeNativeScreenPoint(event);
+    }
+    if (event.type === 'click') {
+      handleNativeClickEvent(event, enriched, eventAtMs);
     }
     boundedPush(state.telemetry.native, {
       ...enriched
@@ -1930,10 +2002,6 @@ function mapPointerToCapture(pointerPayload) {
       boundedPush(state.smartTrail, { x, y, atMs }, performanceProfile(state.recordingSettings || settings).maxTrailSamples);
     }
     state.trail = state.trail.slice(lowLatencyMode(settings) ? -12 : -Math.min(28, performanceProfile(settings).maxTrailSamples));
-  }
-
-  if (velocity > 0.055 && settings.clickPulse) {
-    pushSmartPulse(x, y);
   }
 
   if (velocity > 0.072) {
@@ -3785,8 +3853,8 @@ function buildAttentionTimeline(timelinePlan, outputSize) {
       confidence: 0.96,
       duration_ms: 420,
       scale: roundTo(settings.zoomStrength, 4),
-      reason: 'click pulse',
-      source: 'pulse'
+      reason: pulse.source === 'native-click' ? 'native compositor click' : 'click pulse',
+      source: pulse.source || 'pulse'
     });
   }
 
@@ -3848,7 +3916,9 @@ function directorStyleProfile(settings) {
       scaleMultiplier: 0.78,
       minShotMs: 1120,
       maxShotMs: 2600,
+      maxContinuousShotMs: 4400,
       mergeGapMs: 620,
+      minSelectedGapMs: 980,
       transitionMs: 520,
       maxSegmentsPerMinute: 6
     },
@@ -3857,7 +3927,9 @@ function directorStyleProfile(settings) {
       scaleMultiplier: 1,
       minShotMs: 920,
       maxShotMs: 3200,
+      maxContinuousShotMs: 5400,
       mergeGapMs: 520,
+      minSelectedGapMs: 760,
       transitionMs: 460,
       maxSegmentsPerMinute: 9
     },
@@ -3866,7 +3938,9 @@ function directorStyleProfile(settings) {
       scaleMultiplier: 1.14,
       minShotMs: 820,
       maxShotMs: 3800,
+      maxContinuousShotMs: 6400,
       mergeGapMs: 480,
+      minSelectedGapMs: 620,
       transitionMs: 560,
       maxSegmentsPerMinute: 12
     }
@@ -3928,7 +4002,16 @@ function cameraPreRollMs(cue) {
 function cameraTargetScale(event, score, settings, profile) {
   const requested = Math.max(1.05, finiteNumber(settings.zoomStrength, 1.7));
   const liveScale = Math.max(1, finiteNumber(event.scale, 1));
-  const scoredScale = 1 + (requested - 1) * (0.5 + score * 0.5) * profile.scaleMultiplier;
+  const cue = String(event.type || event.cue || 'attention').replace(/[-\s]+/g, '_');
+  const cueScale = {
+    click: 0.94,
+    keyboard: 0.92,
+    dwell: 0.9,
+    attention: 0.9,
+    focus: 0.88,
+    motion: 0.76
+  }[cue] || 0.88;
+  const scoredScale = 1 + (requested - 1) * (0.5 + score * 0.5) * profile.scaleMultiplier * cueScale;
   const blended = scoredScale * 0.78 + liveScale * 0.22;
   return roundTo(clamp(blended, 1.04, Math.min(2.45, requested + 0.38)), 4);
 }
@@ -3998,17 +4081,20 @@ function mergeDirectorCandidates(candidates, profile) {
 
     const gapMs = candidate.startMs - previous.endMs;
     const distance = Math.hypot(candidate.x - previous.x, candidate.y - previous.y);
-    if (gapMs <= profile.mergeGapMs && distance <= 0.16) {
+    const mergedEndMs = Math.max(previous.endMs, candidate.endMs);
+    const mergedDurationMs = mergedEndMs - previous.startMs;
+    if (gapMs <= profile.mergeGapMs && distance <= 0.16 && mergedDurationMs <= profile.maxContinuousShotMs) {
       const previousWeight = previous.score * previous.sourceCount;
       const nextWeight = candidate.score * candidate.sourceCount;
       const totalWeight = Math.max(0.001, previousWeight + nextWeight);
-      previous.endMs = Math.max(previous.endMs, candidate.endMs);
+      previous.endMs = mergedEndMs;
       previous.x = roundTo((previous.x * previousWeight + candidate.x * nextWeight) / totalWeight, 5);
       previous.y = roundTo((previous.y * previousWeight + candidate.y * nextWeight) / totalWeight, 5);
       previous.scale = roundTo(Math.max(previous.scale, candidate.scale), 4);
       previous.score = roundTo(Math.max(previous.score, candidate.score, (previous.score + candidate.score) / 2), 3);
       previous.confidence = roundTo(Math.max(previous.confidence, candidate.confidence), 3);
       previous.sourceCount += candidate.sourceCount;
+      previous.merged = true;
       if (cueRank(candidate.cue) > cueRank(previous.cue)) {
         previous.cue = candidate.cue;
         previous.reason = candidate.reason;
@@ -4021,6 +4107,22 @@ function mergeDirectorCandidates(candidates, profile) {
   }
 
   return merged;
+}
+
+function capDirectorSegmentDurations(candidates, profile) {
+  return candidates.map((candidate) => {
+    const durationMs = candidate.endMs - candidate.startMs;
+    if (durationMs <= profile.maxContinuousShotMs) {
+      return candidate;
+    }
+
+    return {
+      ...candidate,
+      endMs: candidate.startMs + profile.maxContinuousShotMs,
+      capped: true,
+      reason: `${candidate.reason || candidate.cue} (held focus capped)`
+    };
+  });
 }
 
 function resolveDirectorOverlaps(candidates, profile) {
@@ -4039,11 +4141,14 @@ function resolveDirectorOverlaps(candidates, profile) {
     }
 
     const distance = Math.hypot(candidate.x - previous.x, candidate.y - previous.y);
-    if (distance <= 0.13) {
-      previous.endMs = Math.max(previous.endMs, candidate.endMs);
+    const mergedEndMs = Math.max(previous.endMs, candidate.endMs);
+    const mergedDurationMs = mergedEndMs - previous.startMs;
+    if (distance <= 0.13 && mergedDurationMs <= profile.maxContinuousShotMs) {
+      previous.endMs = mergedEndMs;
       previous.scale = roundTo(Math.max(previous.scale, candidate.scale), 4);
       previous.score = roundTo(Math.max(previous.score, candidate.score), 3);
       previous.sourceCount += candidate.sourceCount;
+      previous.merged = true;
       continue;
     }
 
@@ -4065,15 +4170,32 @@ function resolveDirectorOverlaps(candidates, profile) {
     }
   }
 
-  return resolved.filter((candidate) => candidate.endMs - candidate.startMs >= profile.minShotMs);
+  return capDirectorSegmentDurations(
+    resolved.filter((candidate) => candidate.endMs - candidate.startMs >= profile.minShotMs),
+    profile
+  );
 }
 
 function selectDirectorSegments(candidates, durationMs, profile) {
   const maxSegments = Math.max(4, Math.round((durationMs / 60000) * profile.maxSegmentsPerMinute));
-  return candidates
+  const selected = [];
+  const ranked = candidates
     .slice()
-    .sort((a, b) => b.score - a.score || a.startMs - b.startMs)
-    .slice(0, maxSegments)
+    .sort((a, b) => b.score - a.score || b.sourceCount - a.sourceCount || a.startMs - b.startMs);
+
+  for (const candidate of ranked) {
+    const centerMs = (candidate.startMs + candidate.endMs) / 2;
+    const tooClose = selected.some((segment) => Math.abs(((segment.startMs + segment.endMs) / 2) - centerMs) < profile.minSelectedGapMs);
+    if (tooClose) {
+      continue;
+    }
+    selected.push(candidate);
+    if (selected.length >= maxSegments) {
+      break;
+    }
+  }
+
+  return selected
     .sort((a, b) => a.startMs - b.startMs)
     .map((segment, index) => ({
       ...segment,
@@ -4137,6 +4259,8 @@ function validateCameraPlan(segments, keyframes, durationMs) {
   let maxScale = 1;
   let maxPanSpeed = 0;
   let maxZoomSpeed = 0;
+  let longestSegmentMs = 0;
+  let cappedSegments = 0;
 
   for (const segment of segments) {
     if (segment.startMs < 0 || segment.endMs <= segment.startMs || segment.endMs > durationMs + 50) {
@@ -4162,8 +4286,15 @@ function validateCameraPlan(segments, keyframes, durationMs) {
       }
     }
     const segmentDurationMs = finiteNumber(segment.durationMs, segment.endMs - segment.startMs);
+    longestSegmentMs = Math.max(longestSegmentMs, segmentDurationMs);
+    if (segment.capped) {
+      cappedSegments += 1;
+    }
     if (segmentDurationMs < 780) {
       warnings.push(`${segment.id} is a short zoom and may feel abrupt.`);
+    }
+    if (segmentDurationMs > 7000) {
+      warnings.push(`${segment.id} holds a zoom for a long time.`);
     }
     maxScale = Math.max(maxScale, segment.scale);
     previous = segment;
@@ -4189,7 +4320,9 @@ function validateCameraPlan(segments, keyframes, durationMs) {
       zoomCoverage: roundTo(coverage, 3),
       maxScale: roundTo(maxScale, 3),
       maxPanSpeed: roundTo(maxPanSpeed, 3),
-      maxZoomSpeed: roundTo(maxZoomSpeed, 3)
+      maxZoomSpeed: roundTo(maxZoomSpeed, 3),
+      longestSegmentMs: Math.round(longestSegmentMs),
+      cappedSegments
     }
   };
 }
@@ -4325,6 +4458,8 @@ function compileSmartDirectorPlan(timelinePlan, attentionTimeline, outputSize) {
       reason: segment.reason,
       source: segment.source,
       sourceCount: segment.sourceCount,
+      capped: Boolean(segment.capped),
+      merged: Boolean(segment.merged),
       editable: segment.editable
     })),
     keyframes,
@@ -5256,7 +5391,7 @@ function renderTelemetryAdapterStatus() {
     return;
   }
 
-  if (adapter?.id === 'gnome-shell' && adapter.enabled) {
+  if (adapter?.id === 'gnome-shell' && adapter.active) {
     elements.telemetryAdapterStatus.textContent = 'GNOME precision ready';
     elements.installTelemetryAdapter.textContent = 'Reinstall';
     field?.classList.add('ready');

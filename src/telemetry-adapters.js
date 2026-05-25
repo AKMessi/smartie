@@ -78,6 +78,7 @@ function parseGnomeExtensionInfo(output) {
     name: info.name || null,
     state: info.state || null,
     enabled: state.includes('enabled') || /^yes$/i.test(info.enabled || ''),
+    active: state === 'active',
     path: info.path || null,
     error: null
   };
@@ -157,6 +158,7 @@ async function gnomeExtensionInfo() {
       commandAvailable: false,
       installed: fsSync.existsSync(gnomeExtensionInstallPath()),
       enabled: false,
+      active: false,
       state: null,
       error: 'gnome-extensions command unavailable'
     };
@@ -175,10 +177,22 @@ async function gnomeExtensionInfo() {
       commandAvailable: true,
       installed: fsSync.existsSync(gnomeExtensionInstallPath()),
       enabled: false,
+      active: false,
       state: null,
       error: String(error.stderr || error.message || 'GNOME extension not installed').trim()
     };
   }
+}
+
+async function waitForGnomeExtensionActive(timeoutMs = 3500) {
+  const startedAt = Date.now();
+  let latest = await gnomeExtensionInfo();
+  while (!latest.active && Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    latest = await gnomeExtensionInfo();
+  }
+
+  return latest;
 }
 
 async function statusTelemetryAdapters() {
@@ -208,8 +222,9 @@ async function statusTelemetryAdapters() {
     installPath: gnomeExtensionInstallPath(),
     installed: Boolean(gnomeInfo.installed),
     enabled: Boolean(gnomeInfo.enabled),
+    active: Boolean(gnomeInfo.active),
     enabledSetting: Boolean(gnomeEnabledSetting.includesSmartie),
-    pendingRestart: Boolean(gnomeInfo.installed && gnomeEnabledSetting.includesSmartie && !gnomeInfo.enabled),
+    pendingRestart: Boolean(gnomeInfo.installed && gnomeEnabledSetting.includesSmartie && !gnomeInfo.active),
     commandAvailable: Boolean(gnomeInfo.commandAvailable),
     gsettingsAvailable: Boolean(gnomeEnabledSetting.available),
     state: gnomeInfo.state,
@@ -233,7 +248,7 @@ async function statusTelemetryAdapters() {
 
   const adapters = [gnomeAdapter, kwinAdapter];
   const best = adapters.find((adapter) => adapter.supported && adapter.recommended) || adapters.find((adapter) => adapter.recommended) || null;
-  const ready = Boolean(gnomeAdapter.enabled || (helperPath && fsSync.existsSync(helperPath)));
+  const ready = Boolean(gnomeAdapter.active || (helperPath && fsSync.existsSync(helperPath)));
 
   return {
     schema: ADAPTER_STATUS_SCHEMA,
@@ -252,7 +267,7 @@ async function statusTelemetryAdapters() {
 
 function adapterNotes({ gnomeAdapter, kwinAdapter, helperPath }) {
   const notes = [];
-  if (gnomeAdapter.recommended && !gnomeAdapter.enabled) {
+  if (gnomeAdapter.recommended && !gnomeAdapter.active) {
     notes.push(gnomeAdapter.pendingRestart
       ? 'GNOME adapter is enabled in settings and will activate after the next login.'
       : gnomeAdapter.installed
@@ -280,6 +295,12 @@ async function installGnomeTelemetryAdapter({ enable = true } = {}) {
   if (commandExists('gnome-extensions')) {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartie-gnome-extension-'));
     try {
+      try {
+        await commandOutput('gnome-extensions', ['disable', GNOME_EXTENSION_UUID], 1800);
+        commands.push(`gnome-extensions disable ${GNOME_EXTENSION_UUID}`);
+      } catch {
+        // The extension may not be visible in the current Shell yet.
+      }
       await commandOutput('gnome-extensions', ['pack', '--force', '--out-dir', tempDir, sourcePath], 5000);
       commands.push('gnome-extensions pack');
       const bundles = await fs.readdir(tempDir);
@@ -321,7 +342,9 @@ async function installGnomeTelemetryAdapter({ enable = true } = {}) {
     try {
       await commandOutput('gnome-extensions', ['enable', GNOME_EXTENSION_UUID], 2500);
       commands.push(`gnome-extensions enable ${GNOME_EXTENSION_UUID}`);
-      enabled = true;
+      const activeInfo = await waitForGnomeExtensionActive();
+      enabled = Boolean(activeInfo.enabled);
+      pendingRestart = !activeInfo.active;
     } catch (error) {
       enableError = String(error.stderr || error.message || 'GNOME extension enable failed').trim();
       try {
@@ -349,6 +372,7 @@ async function installGnomeTelemetryAdapter({ enable = true } = {}) {
     adapter: 'gnome-shell',
     installPath,
     enabled: enabled || Boolean(status.adapters.find((adapter) => adapter.id === 'gnome-shell')?.enabled),
+    active: Boolean(status.adapters.find((adapter) => adapter.id === 'gnome-shell')?.active),
     pendingRestart: pendingRestart || Boolean(status.adapters.find((adapter) => adapter.id === 'gnome-shell')?.pendingRestart),
     commands,
     warning: [installWarning, enableError].filter(Boolean).join(' | ') || null,

@@ -1,5 +1,6 @@
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import Clutter from 'gi://Clutter';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const PROTOCOL = 'smartie.native_telemetry.helper.v1';
@@ -30,6 +31,10 @@ export default class SmartieTelemetryExtension extends Extension {
     this._focusSignal = global.display.connect('notify::focus-window', () => {
       this._publishFocus();
     });
+    this._stageSignal = global.stage.connect('captured-event', (_actor, event) => {
+      this._publishStageEvent(event);
+      return Clutter.EVENT_PROPAGATE;
+    });
   }
 
   disable() {
@@ -40,6 +45,10 @@ export default class SmartieTelemetryExtension extends Extension {
     if (this._focusSignal) {
       global.display.disconnect(this._focusSignal);
       this._focusSignal = 0;
+    }
+    if (this._stageSignal) {
+      global.stage.disconnect(this._stageSignal);
+      this._stageSignal = 0;
     }
     this._close();
   }
@@ -150,6 +159,24 @@ export default class SmartieTelemetryExtension extends Extension {
         width: rect.width,
         height: rect.height
       }
+    });
+  }
+
+  _publishStageEvent(event) {
+    const type = event.type();
+    if (type !== Clutter.EventType.BUTTON_PRESS) {
+      return;
+    }
+
+    const [screenX, screenY] = event.get_coords();
+    this._send({
+      type: 'click',
+      provider: 'gnome-shell',
+      action: 'press',
+      button: event.get_button(),
+      screen_x: Math.round(screenX),
+      screen_y: Math.round(screenY),
+      precision: 'compositor-global'
     });
   }
 }
