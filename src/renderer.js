@@ -250,6 +250,44 @@ const qualityProfiles = {
   }
 };
 
+const outputLayouts = {
+  landscape: {
+    label: 'Landscape 16:9',
+    aspectRatio: 16 / 9,
+    sizeForProfile: (profile) => ({
+      width: profile.width,
+      height: profile.height
+    })
+  },
+  widescreen: {
+    label: 'Wide 16:10',
+    aspectRatio: 16 / 10,
+    sizeForProfile: (profile) => ({
+      width: profile.width,
+      height: Math.max(2, Math.round((profile.width * 10) / 16 / 2) * 2)
+    })
+  },
+  square: {
+    label: 'Square 1:1',
+    aspectRatio: 1,
+    sizeForProfile: (profile) => {
+      const squareSize = Math.min(profile.width, profile.height);
+      return {
+        width: squareSize,
+        height: squareSize
+      };
+    }
+  },
+  vertical: {
+    label: 'Vertical 9:16',
+    aspectRatio: 9 / 16,
+    sizeForProfile: (profile) => ({
+      width: profile.height,
+      height: profile.width
+    })
+  }
+};
+
 const performanceProfiles = {
   potato: {
     label: 'Potato saver',
@@ -557,26 +595,8 @@ function renderDeviceSelect(select, devices, selectedValue, defaultLabel, fallba
 
 function canvasSizeForSettings(settings = getSettings()) {
   const profile = qualityProfiles[settings.quality] || qualityProfiles.balanced;
-  const outputLayout = outputLayoutForRecording(settings);
-  let size;
-
-  if (outputLayout === 'vertical') {
-    size = {
-      width: profile.height,
-      height: profile.width
-    };
-  } else if (outputLayout === 'square') {
-    const squareSize = Math.min(profile.width, profile.height);
-    return capCanvasSize({
-      width: squareSize,
-      height: squareSize
-    }, performanceShortSide(settings));
-  } else {
-    size = {
-      width: profile.width,
-      height: profile.height
-    };
-  }
+  const layout = outputLayouts[outputLayoutForRecording(settings)] || outputLayouts.landscape;
+  const size = layout.sizeForProfile(profile);
 
   return capCanvasSize(size, performanceShortSide(settings));
 }
@@ -720,7 +740,8 @@ function usesSmartEffectsOutput(settings = getSettings()) {
 }
 
 function outputLayoutForRecording(settings = getSettings()) {
-  return usesSmartEffectsOutput(settings) ? settings.outputLayout : 'landscape';
+  const requestedLayout = outputLayouts[settings.outputLayout] ? settings.outputLayout : 'landscape';
+  return usesSmartEffectsOutput(settings) ? requestedLayout : 'landscape';
 }
 
 function effectiveRecordingFps(settings = getSettings()) {

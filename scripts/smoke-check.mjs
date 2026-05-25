@@ -85,6 +85,9 @@ for (const asset of ['styles.css', 'renderer.js']) {
     throw new Error(`index.html does not reference ${asset}`);
   }
 }
+if (!html.includes('value="widescreen"') || !html.includes('Wide 16:10')) {
+  throw new Error('Output layout selector must expose Wide 16:10 support');
+}
 
 const renderer = readFileSync(join(root, 'src/renderer.js'), 'utf8');
 for (const feature of [
@@ -166,6 +169,7 @@ for (const feature of [
   'drawCursorTrail',
   'vectorLayerPoint',
   'outputLayout',
+  'outputLayouts',
   'canvasSizeForSettings',
   'canvasPointFromEvent',
   'dropMarker',

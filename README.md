@@ -52,7 +52,7 @@ saved video after recording.
 - PNG snapshot capture from the polished recording canvas.
 - Take title naming with optional rendered title card and lower-third overlay.
 - Presenter cue text with optional rendered top or bottom prompt overlay.
-- Landscape, square, and vertical output layouts for demo, social, and mobile-ready exports.
+- Landscape 16:9, wide 16:10, square 1:1, and vertical 9:16 output layouts for demo, social, and mobile-ready exports.
 - Rendered privacy blur region for masking sensitive UI during demos.
 - Live capture health telemetry with FPS and dropped-frame estimates.
 - Pause/resume, discard, and elapsed-time tracking that excludes pauses.
