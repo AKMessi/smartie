@@ -1,6 +1,7 @@
 const { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, screen, shell } = require('electron');
 const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { promisify } = require('node:util');
@@ -458,12 +459,42 @@ function mp4PathFor(videoPath) {
   return `${base}.mp4`;
 }
 
-function resolvedFfmpegPath() {
-  if (!ffmpegPath) {
-    return null;
+function executableExists(candidate) {
+  if (!candidate) {
+    return false;
   }
 
-  return ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+  const candidates = process.platform === 'win32' && !path.extname(candidate)
+    ? [candidate, `${candidate}.exe`, `${candidate}.cmd`, `${candidate}.bat`]
+    : [candidate];
+  return candidates.some((item) => {
+    if (process.platform === 'win32' && path.isAbsolute(item) && path.extname(item).toLowerCase() !== '.exe') {
+      return false;
+    }
+    try {
+      fsSync.accessSync(item, fsSync.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function resolvedFfmpegPath() {
+  const bundled = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : null;
+  if (executableExists(bundled)) {
+    return bundled;
+  }
+
+  const systemBinary = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  for (const directory of (process.env.PATH || '').split(path.delimiter)) {
+    const candidate = path.join(directory, systemBinary);
+    if (executableExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function formatVttTime(ms) {

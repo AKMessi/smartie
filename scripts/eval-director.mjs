@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
+const cameraOverscan = 0.32;
+
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, 'utf8'));
 }
@@ -109,6 +111,20 @@ function fallbackAttentionScale(settings, confidence, maxScale = null) {
   const requested = Math.max(1.05, finiteNumber(settings.zoomStrength, 1.7));
   const ceiling = maxScale || Math.min(requested, 1.62);
   return roundTo(clamp(1 + (requested - 1) * (0.42 + confidence * 0.38), 1.08, ceiling), 4);
+}
+
+function cameraOffsetForTarget(value, scale, desired = 0.5) {
+  const safeScale = Math.max(1, finiteNumber(scale, 1));
+  if (safeScale <= 1.001) {
+    return 0.5;
+  }
+
+  return roundTo(clamp((clamp01(finiteNumber(value, 0.5)) * safeScale - desired) / (safeScale - 1), -cameraOverscan, 1 + cameraOverscan), 5);
+}
+
+function targetOutputPosition(targetValue, cameraOffset, scale) {
+  const safeScale = Math.max(1, finiteNumber(scale, 1));
+  return roundTo(clamp(finiteNumber(targetValue, 0.5) * safeScale - (safeScale - 1) * finiteNumber(cameraOffset, 0.5), 0, 1), 5);
 }
 
 function buildCursorSettleEvents(samples = [], durationMs = 0, settings = {}, output = { width: 1920, height: 1080 }) {
@@ -462,11 +478,19 @@ function compileSegments(events, settings, durationMs) {
 
     const requested = Math.max(1.05, finiteNumber(settings.zoomStrength, 1.7));
     const scale = roundTo(clamp(finiteNumber(event.scale, requested), 1.04, Math.min(2.45, requested + 0.38)), 4);
+    const targetX = clamp01(finiteNumber(event.x, 0.5));
+    const targetY = clamp01(finiteNumber(event.y, 0.5));
+    const cameraX = cameraOffsetForTarget(targetX, scale);
+    const cameraY = cameraOffsetForTarget(targetY, scale);
     candidates.push({
       startMs: Math.round(startMs),
       endMs: Math.round(endMs),
-      x: clamp01(finiteNumber(event.x, 0.5)),
-      y: clamp01(finiteNumber(event.y, 0.5)),
+      x: cameraX,
+      y: cameraY,
+      targetX,
+      targetY,
+      targetScreenX: targetOutputPosition(targetX, cameraX, scale),
+      targetScreenY: targetOutputPosition(targetY, cameraY, scale),
       scale,
       cue,
       confidence,
@@ -477,9 +501,21 @@ function compileSegments(events, settings, durationMs) {
   }
 
   const maxSegments = Math.max(4, Math.round((durationMs / 60000) * profile.maxSegmentsPerMinute));
-  const segments = candidates
+  const selected = [];
+  for (const candidate of candidates
     .sort((a, b) => b.score - a.score || a.startMs - b.startMs)
-    .slice(0, maxSegments)
+  ) {
+    const centerMs = (candidate.startMs + candidate.endMs) / 2;
+    if (selected.some((segment) => Math.abs(((segment.startMs + segment.endMs) / 2) - centerMs) < 760)) {
+      continue;
+    }
+    selected.push(candidate);
+    if (selected.length >= maxSegments) {
+      break;
+    }
+  }
+
+  const segments = selected
     .sort((a, b) => a.startMs - b.startMs)
     .map((segment, index) => ({
       ...segment,
@@ -488,7 +524,11 @@ function compileSegments(events, settings, durationMs) {
   segments.stats = {
     rejectedSyntheticMarkers,
     rejectedEdgeTargets,
-    candidateCount: candidates.length
+    candidateCount: candidates.length,
+    maxTargetCenterDistance: roundTo(segments.reduce((maxDistance, segment) => Math.max(
+      maxDistance,
+      Math.hypot(finiteNumber(segment.targetScreenX, 0.5) - 0.5, finiteNumber(segment.targetScreenY, 0.5) - 0.5)
+    ), 0), 3)
   };
   return segments;
 }
@@ -559,6 +599,7 @@ const report = {
     rejectedSyntheticMarkers: projectedStats.rejectedSyntheticMarkers || 0,
     rejectedEdgeTargets: projectedStats.rejectedEdgeTargets || 0,
     candidateCount: projectedStats.candidateCount || projectedSegments.length,
+    maxTargetCenterDistance: projectedStats.maxTargetCenterDistance || 0,
     cameraSegments: projectedSegments.length,
     segments: projectedSegments
   }

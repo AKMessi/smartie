@@ -19,7 +19,7 @@ function run(command, args = []) {
 }
 
 function commandExists(command) {
-  return Boolean(run('which', [command]));
+  return Boolean(run(process.platform === 'win32' ? 'where' : 'which', [command]));
 }
 
 function add(status, name, detail) {
@@ -40,8 +40,13 @@ function checkNode() {
 }
 
 function checkPlatform() {
-  const supported = process.platform === 'linux' && process.arch === 'x64';
-  add(supported ? 'PASS' : 'WARN', 'Platform', `${process.platform}/${process.arch}; Smartie is currently tuned for linux/x64`);
+  const supported = (process.platform === 'linux' || process.platform === 'win32') && process.arch === 'x64';
+  const detail = process.platform === 'linux'
+    ? `${process.platform}/${process.arch}; native telemetry optimized for Linux desktops`
+    : process.platform === 'win32'
+      ? `${process.platform}/${process.arch}; Windows package uses Electron desktop capture with fallback telemetry`
+      : `${process.platform}/${process.arch}; Smartie packages are currently tuned for Linux and Windows x64`;
+  add(supported ? 'PASS' : 'WARN', 'Platform', detail);
 }
 
 function checkElectronInstall() {
@@ -66,6 +71,12 @@ function checkSandbox() {
 }
 
 function checkDesktopSession() {
+  if (process.platform === 'win32') {
+    add('PASS', 'Desktop session', 'Windows desktop capture via Electron');
+    add('PASS', 'Portal check', 'not required on Windows');
+    return;
+  }
+
   const session = process.env.XDG_SESSION_TYPE || 'unknown';
   const desktop = process.env.XDG_CURRENT_DESKTOP || process.env.DESKTOP_SESSION || 'unknown';
   const portal = serviceState('xdg-desktop-portal.service');
@@ -83,6 +94,11 @@ function checkDesktopSession() {
 }
 
 function checkNativeTelemetry() {
+  if (process.platform !== 'linux') {
+    add('PASS', 'Native telemetry helper', 'Linux compositor adapters disabled; Smartie will use portable capture telemetry');
+    return;
+  }
+
   const session = process.env.XDG_SESSION_TYPE || 'unknown';
   const desktop = `${process.env.XDG_CURRENT_DESKTOP || ''}:${process.env.DESKTOP_SESSION || ''}`.toLowerCase();
   const helperPath = process.env.SMARTIE_TELEMETRY_HELPER || '';
@@ -132,7 +148,7 @@ function checkNativeTelemetry() {
 
 function checkPackageTool() {
   const packagerPath = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'electron-packager.cmd' : 'electron-packager');
-  add(existsSync(packagerPath) ? 'PASS' : 'FAIL', 'Linux packager', existsSync(packagerPath) ? 'installed' : 'run npm install');
+  add(existsSync(packagerPath) ? 'PASS' : 'FAIL', 'Desktop packager', existsSync(packagerPath) ? 'installed' : 'run npm install');
 }
 
 function checkBundledFfmpeg() {

@@ -1,6 +1,7 @@
 # Smartie
 
-Smartie is a Linux-compatible smart screen recorder for polished demo videos.
+Smartie is a smart screen recorder for polished demo videos, with a Linux-first
+native telemetry pipeline and packaged desktop builds for Linux and Windows.
 It records a selected screen or window through Electron with a hybrid smart
 pipeline by default: capture stays native and low-latency during the take, then
 the smart zoom, cursor polish, overlays, and framing effects are baked into the
@@ -42,7 +43,7 @@ saved video after recording.
 - Optional hide-while-recording mode to keep Smartie out of full-screen takes.
 - Auto-save mode with a selectable output folder for repeated takes.
 - Recent takes list with quick reveal actions.
-- Chapter markers with a shortcut, automatic smart moments, and brief rendered marker overlay.
+- Chapter markers with a shortcut and automatic smart moments for timeline metadata.
 - JSON sidecar metadata next to every saved video with markers and smart settings.
 - Smartie project sidecar next to every saved video with recording, manifest, metadata, attention timeline, and editable camera plan files.
 - WebVTT chapter sidecars for marker import into players and editors.
@@ -57,13 +58,14 @@ saved video after recording.
 - Global recorder shortcuts with Wayland portal support where available.
 - Low-latency Smartie hybrid engine, native recording engine, live smart-effects engine, adaptive optimization presets, quality presets,
   frame-rate control, smart-effects layout control, countdown, elapsed timer, WebM export, and optional bundled-FFmpeg MP4 copy.
-- Linux desktop support through Electron desktop capture APIs.
+- Linux desktop support through Electron desktop capture APIs and GNOME/KWin telemetry adapters.
+- Windows desktop package support through Electron desktop capture; native compositor telemetry is currently Linux-first.
 
 ## Requirements
 
 - Node.js 22 or newer.
 - npm 9 or newer.
-- Linux desktop session with screen capture permission available to Electron.
+- Linux desktop session with screen capture permission available to Electron, or Windows 10/11 for the packaged Windows build.
 
 ## Install
 
@@ -178,7 +180,15 @@ freshly installed local extension may show as pending until the next login.
 
 ```bash
 npm run package:linux
+npm run package:win
 ```
+
+Packages are written to `dist/`. The Linux package includes the Smartie native
+telemetry assets. The Windows package runs the core recorder and post-rendered
+smart effects through Electron desktop capture; Linux compositor telemetry
+adapters are not loaded on Windows. MP4 export uses bundled FFmpeg when the
+package is built on the target platform, and falls back to a system `ffmpeg`
+binary on `PATH` when a cross-built package does not contain a runnable FFmpeg.
 
 ## Notes
 

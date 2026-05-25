@@ -415,6 +415,7 @@ const persistedSettingKeys = [
 
 const settingsStoreKey = 'smartie.settings.v1';
 const recentStoreKey = 'smartie.recent.v1';
+const cameraOverscan = 0.32;
 
 function loadPersistedSettings() {
   try {
@@ -2425,6 +2426,25 @@ function attentionScale(settings, confidence, bonus = 0) {
   return clamp(base + bonus, 1, Math.max(1.05, settings.zoomStrength + 0.34));
 }
 
+function cameraOffsetForTarget(value, scale, desired = 0.5) {
+  const safeScale = Math.max(1, finiteNumber(scale, 1));
+  if (safeScale <= 1.001) {
+    return 0.5;
+  }
+
+  const target = clamp01(finiteNumber(value, 0.5));
+  return roundTo(clamp((target * safeScale - desired) / (safeScale - 1), -cameraOverscan, 1 + cameraOverscan), 5);
+}
+
+function cameraFrameForTarget(target) {
+  const scale = Math.max(1, finiteNumber(target?.scale, 1));
+  return {
+    x: cameraOffsetForTarget(target?.x, scale),
+    y: cameraOffsetForTarget(target?.y, scale),
+    scale
+  };
+}
+
 function pointerIntentPoint() {
   const dx = state.pointer.x - state.pointer.previousX;
   const dy = state.pointer.y - state.pointer.previousY;
@@ -2644,13 +2664,14 @@ function smartTarget(settings) {
 
 function easeFrame(settings) {
   const target = smartTarget(settings);
+  const targetFrame = cameraFrameForTarget(target);
   const baseSmoothing = settings.smartMaster ? settings.smoothing : 0.16;
-  const travel = normalizedDistance(state.frame, target);
+  const travel = normalizedDistance(state.frame, targetFrame);
   const panSmoothing = clamp(baseSmoothing + travel * 0.16 + target.confidence * 0.025, 0.045, 0.32);
   const zoomSmoothing = clamp(baseSmoothing * 0.82 + target.confidence * 0.03, 0.04, 0.24);
-  state.frame.scale += (target.scale - state.frame.scale) * zoomSmoothing;
-  state.frame.x += (target.x - state.frame.x) * panSmoothing;
-  state.frame.y += (target.y - state.frame.y) * panSmoothing;
+  state.frame.scale += (targetFrame.scale - state.frame.scale) * zoomSmoothing;
+  state.frame.x += (targetFrame.x - state.frame.x) * panSmoothing;
+  state.frame.y += (targetFrame.y - state.frame.y) * panSmoothing;
 }
 
 function drawVideoFrame(settings) {
@@ -2666,6 +2687,18 @@ function drawVideoFrame(settings) {
 
   ctx.fillStyle = '#07080a';
   ctx.fillRect(0, 0, width, height);
+  if (state.frame.scale > 1.02 && !lowLatencyMode(settings)) {
+    const backdrop = coverRect(sourceWidth, sourceHeight, width, height, 1.04);
+    const backdropX = -Math.max(0, backdrop.drawWidth - width) * 0.5;
+    const backdropY = -Math.max(0, backdrop.drawHeight - height) * 0.5;
+    ctx.save();
+    ctx.globalAlpha = 0.72;
+    ctx.filter = `blur(${Math.max(14, Math.round(width * 0.012))}px)`;
+    ctx.drawImage(video, backdropX, backdropY, backdrop.drawWidth, backdrop.drawHeight);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(7, 8, 10, 0.34)';
+    ctx.fillRect(0, 0, width, height);
+  }
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = settings.smoothRecording ? 'medium' : 'high';
   ctx.drawImage(video, drawX, drawY, drawWidth, drawHeight);
@@ -2800,8 +2833,8 @@ function vectorLayerPoint(x, y) {
   const scale = Math.max(1, finiteNumber(state.frame.scale, 1));
   const drawWidth = width * scale;
   const drawHeight = height * scale;
-  const drawX = -Math.max(0, drawWidth - width) * clamp01(finiteNumber(state.frame.x, 0.5));
-  const drawY = -Math.max(0, drawHeight - height) * clamp01(finiteNumber(state.frame.y, 0.5));
+  const drawX = -Math.max(0, drawWidth - width) * finiteNumber(state.frame.x, 0.5);
+  const drawY = -Math.max(0, drawHeight - height) * finiteNumber(state.frame.y, 0.5);
   const pointX = drawX + clamp01(finiteNumber(x, 0.5)) * drawWidth;
   const pointY = drawY + clamp01(finiteNumber(y, 0.5)) * drawHeight;
 
@@ -2993,6 +3026,9 @@ function drawMarkerOverlay(settings) {
   if (!settings.smartMaster || !state.activeMarker) {
     return;
   }
+  if (state.activeMarker.kind !== 'manual') {
+    return;
+  }
 
   const elapsed = performance.now() - state.activeMarker.startedAt;
   if (elapsed > 1800) {
@@ -3028,7 +3064,7 @@ function drawTimelineMarkerOverlay(settings, atMs, markers) {
     return;
   }
 
-  const marker = markers.findLast((item) => atMs >= item.atMs && atMs - item.atMs <= 1800);
+  const marker = markers.findLast((item) => item.kind === 'manual' && atMs >= item.atMs && atMs - item.atMs <= 1800);
   if (!marker) {
     return;
   }
@@ -4769,12 +4805,34 @@ function cameraTargetScale(event, score, settings, profile) {
 }
 
 function boundedCameraPoint(x, y, scale) {
-  const visible = 1 / Math.max(1, scale);
-  const margin = clamp(visible * 0.32, 0.04, 0.42);
+  const safeScale = Math.max(1, finiteNumber(scale, 1));
+  const targetX = clamp01(finiteNumber(x, 0.5));
+  const targetY = clamp01(finiteNumber(y, 0.5));
   return {
-    x: roundTo(clamp(finiteNumber(x, 0.5), margin, 1 - margin), 5),
-    y: roundTo(clamp(finiteNumber(y, 0.5), margin, 1 - margin), 5)
+    x: cameraOffsetForTarget(targetX, safeScale),
+    y: cameraOffsetForTarget(targetY, safeScale),
+    targetX: roundTo(targetX, 5),
+    targetY: roundTo(targetY, 5)
   };
+}
+
+function recenterDirectorSegment(segment) {
+  const scale = Math.max(1, finiteNumber(segment.scale, 1));
+  const targetX = clamp01(finiteNumber(segment.targetX, segment.x));
+  const targetY = clamp01(finiteNumber(segment.targetY, segment.y));
+  return {
+    ...segment,
+    x: cameraOffsetForTarget(targetX, scale),
+    y: cameraOffsetForTarget(targetY, scale),
+    targetX: roundTo(targetX, 5),
+    targetY: roundTo(targetY, 5),
+    scale: roundTo(scale, 4)
+  };
+}
+
+function targetOutputPosition(targetValue, cameraOffset, scale) {
+  const safeScale = Math.max(1, finiteNumber(scale, 1));
+  return roundTo(clamp(finiteNumber(targetValue, 0.5) * safeScale - (safeScale - 1) * finiteNumber(cameraOffset, 0.5), 0, 1), 5);
 }
 
 function isTransientDirectorCandidate(candidate) {
@@ -4825,6 +4883,8 @@ function mergeDirectorTarget(previous, candidate, previousWeight, nextWeight) {
     return {
       x: candidate.x,
       y: candidate.y,
+      targetX: candidate.targetX,
+      targetY: candidate.targetY,
       source: candidate.source,
       reason: candidate.reason,
       cue: candidate.cue
@@ -4835,6 +4895,8 @@ function mergeDirectorTarget(previous, candidate, previousWeight, nextWeight) {
     return {
       x: previous.x,
       y: previous.y,
+      targetX: previous.targetX,
+      targetY: previous.targetY,
       source: previous.source,
       reason: previous.reason,
       cue: previous.cue
@@ -4845,6 +4907,8 @@ function mergeDirectorTarget(previous, candidate, previousWeight, nextWeight) {
   return {
     x: (previous.x * previousWeight + candidate.x * nextWeight) / totalWeight,
     y: (previous.y * previousWeight + candidate.y * nextWeight) / totalWeight,
+    targetX: (finiteNumber(previous.targetX, previous.x) * previousWeight + finiteNumber(candidate.targetX, candidate.x) * nextWeight) / totalWeight,
+    targetY: (finiteNumber(previous.targetY, previous.y) * previousWeight + finiteNumber(candidate.targetY, candidate.y) * nextWeight) / totalWeight,
     source: cueRank(candidate.cue) > cueRank(previous.cue) ? candidate.source : previous.source,
     reason: cueRank(candidate.cue) > cueRank(previous.cue) ? candidate.reason : previous.reason,
     cue: cueRank(candidate.cue) > cueRank(previous.cue) ? candidate.cue : previous.cue
@@ -4898,6 +4962,8 @@ function directorCandidateFromEvent(event, settings, profile, durationMs) {
     endMs: Math.round(endMs),
     x: point.x,
     y: point.y,
+    targetX: point.targetX,
+    targetY: point.targetY,
     scale: targetScale,
     cue,
     score,
@@ -4929,7 +4995,10 @@ function mergeDirectorCandidates(candidates, profile) {
       previous.endMs = mergedEndMs;
       previous.x = roundTo(target.x, 5);
       previous.y = roundTo(target.y, 5);
+      previous.targetX = roundTo(clamp01(target.targetX ?? previous.targetX ?? candidate.targetX ?? previous.x), 5);
+      previous.targetY = roundTo(clamp01(target.targetY ?? previous.targetY ?? candidate.targetY ?? previous.y), 5);
       previous.scale = roundTo(Math.max(previous.scale, candidate.scale), 4);
+      Object.assign(previous, recenterDirectorSegment(previous));
       previous.score = roundTo(Math.max(previous.score, candidate.score, (previous.score + candidate.score) / 2), 3);
       previous.confidence = roundTo(Math.max(previous.confidence, candidate.confidence), 3);
       previous.sourceCount += candidate.sourceCount;
@@ -4989,7 +5058,10 @@ function resolveDirectorOverlaps(candidates, profile) {
       previous.endMs = mergedEndMs;
       previous.x = roundTo(target.x, 5);
       previous.y = roundTo(target.y, 5);
+      previous.targetX = roundTo(clamp01(target.targetX ?? previous.targetX ?? candidate.targetX ?? previous.x), 5);
+      previous.targetY = roundTo(clamp01(target.targetY ?? previous.targetY ?? candidate.targetY ?? previous.y), 5);
       previous.scale = roundTo(Math.max(previous.scale, candidate.scale), 4);
+      Object.assign(previous, recenterDirectorSegment(previous));
       previous.score = roundTo(Math.max(previous.score, candidate.score), 3);
       previous.confidence = roundTo(Math.max(previous.confidence, candidate.confidence), 3);
       previous.sourceCount += candidate.sourceCount;
@@ -5020,10 +5092,25 @@ function resolveDirectorOverlaps(candidates, profile) {
     }
   }
 
-  return capDirectorSegmentDurations(
-    resolved.filter((candidate) => candidate.endMs - candidate.startMs >= profile.minShotMs),
-    profile
-  );
+  const deduped = [];
+  for (const candidate of resolved.filter((item) => item.endMs - item.startMs >= profile.minShotMs)) {
+    const previous = deduped[deduped.length - 1];
+    if (
+      previous
+      && Math.abs(candidate.startMs - previous.startMs) < 80
+      && Math.abs(candidate.endMs - previous.endMs) < 80
+      && Math.hypot(finiteNumber(candidate.targetX, candidate.x) - finiteNumber(previous.targetX, previous.x), finiteNumber(candidate.targetY, candidate.y) - finiteNumber(previous.targetY, previous.y)) < 0.025
+    ) {
+      if (directorAnchorStrength(candidate) > directorAnchorStrength(previous)) {
+        deduped[deduped.length - 1] = { ...candidate };
+      }
+      continue;
+    }
+
+    deduped.push({ ...candidate });
+  }
+
+  return capDirectorSegmentDurations(deduped, profile);
 }
 
 function selectDirectorSegments(candidates, durationMs, profile) {
@@ -5048,7 +5135,7 @@ function selectDirectorSegments(candidates, durationMs, profile) {
   return selected
     .sort((a, b) => a.startMs - b.startMs)
     .map((segment, index) => ({
-      ...segment,
+      ...recenterDirectorSegment(segment),
       id: `shot-${String(index + 1).padStart(3, '0')}`
     }));
 }
@@ -5058,8 +5145,8 @@ function addCameraKeyframe(keyframes, atMs, frame, reason) {
   const previous = keyframes[keyframes.length - 1];
   const keyframe = {
     atMs: safeAtMs,
-    x: roundTo(clamp01(frame.x), 5),
-    y: roundTo(clamp01(frame.y), 5),
+    x: roundTo(clamp(finiteNumber(frame.x, 0.5), -cameraOverscan, 1 + cameraOverscan), 5),
+    y: roundTo(clamp(finiteNumber(frame.y, 0.5), -cameraOverscan, 1 + cameraOverscan), 5),
     scale: roundTo(Math.max(1, finiteNumber(frame.scale, 1)), 4),
     reason
   };
@@ -5111,6 +5198,7 @@ function validateCameraPlan(segments, keyframes, durationMs) {
   let maxZoomSpeed = 0;
   let longestSegmentMs = 0;
   let cappedSegments = 0;
+  let maxTargetCenterDistance = 0;
 
   for (const segment of segments) {
     if (segment.startMs < 0 || segment.endMs <= segment.startMs || segment.endMs > durationMs + 50) {
@@ -5146,6 +5234,13 @@ function validateCameraPlan(segments, keyframes, durationMs) {
     if (segmentDurationMs > 7000) {
       warnings.push(`${segment.id} holds a zoom for a long time.`);
     }
+    const targetScreenX = targetOutputPosition(segment.targetX ?? segment.x, segment.x, segment.scale);
+    const targetScreenY = targetOutputPosition(segment.targetY ?? segment.y, segment.y, segment.scale);
+    const centerDistance = Math.hypot(targetScreenX - 0.5, targetScreenY - 0.5);
+    maxTargetCenterDistance = Math.max(maxTargetCenterDistance, centerDistance);
+    if (centerDistance > 0.32) {
+      warnings.push(`${segment.id} target cannot be centered because it is near the capture edge.`);
+    }
     maxScale = Math.max(maxScale, segment.scale);
     previous = segment;
   }
@@ -5172,7 +5267,8 @@ function validateCameraPlan(segments, keyframes, durationMs) {
       maxPanSpeed: roundTo(maxPanSpeed, 3),
       maxZoomSpeed: roundTo(maxZoomSpeed, 3),
       longestSegmentMs: Math.round(longestSegmentMs),
-      cappedSegments
+      cappedSegments,
+      maxTargetCenterDistance: roundTo(maxTargetCenterDistance, 3)
     }
   };
 }
@@ -5305,6 +5401,10 @@ function compileSmartDirectorPlan(timelinePlan, attentionTimeline, outputSize) {
       durationMs: segment.endMs - segment.startMs,
       x: segment.x,
       y: segment.y,
+      targetX: segment.targetX ?? segment.x,
+      targetY: segment.targetY ?? segment.y,
+      targetScreenX: targetOutputPosition(segment.targetX ?? segment.x, segment.x, segment.scale),
+      targetScreenY: targetOutputPosition(segment.targetY ?? segment.y, segment.y, segment.scale),
       scale: segment.scale,
       cue: segment.cue,
       confidence: segment.confidence,
@@ -5672,8 +5772,9 @@ function recorderMimeType() {
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
 }
 
-function waitForMediaEvent(target, eventName) {
+function waitForMediaEvent(target, eventName, timeoutMs = 0) {
   return new Promise((resolve, reject) => {
+    let timeoutId = null;
     const onEvent = () => {
       cleanup();
       resolve();
@@ -5682,13 +5783,23 @@ function waitForMediaEvent(target, eventName) {
       cleanup();
       reject(new Error(target.error?.message || `Media ${eventName} failed.`));
     };
+    const onTimeout = () => {
+      cleanup();
+      reject(new Error(`Timed out waiting for media ${eventName}.`));
+    };
     const cleanup = () => {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
       target.removeEventListener(eventName, onEvent);
       target.removeEventListener('error', onError);
     };
 
     target.addEventListener(eventName, onEvent, { once: true });
     target.addEventListener('error', onError, { once: true });
+    if (timeoutMs > 0) {
+      timeoutId = window.setTimeout(onTimeout, timeoutMs);
+    }
   });
 }
 
@@ -5700,6 +5811,13 @@ function stopRecorder(recorder) {
     }
 
     recorder.addEventListener('stop', resolve, { once: true });
+    if (typeof recorder.requestData === 'function') {
+      try {
+        recorder.requestData();
+      } catch (error) {
+        console.warn('Could not flush recorder data before stop.', error);
+      }
+    }
     recorder.stop();
   });
 }
@@ -5730,10 +5848,10 @@ async function renderSmartEffectsVideo(rawBlob, timelinePlan) {
     video.playbackRate = 1;
     video.src = objectUrl;
     video.load();
-    await waitForMediaEvent(video, 'loadedmetadata');
+    await waitForMediaEvent(video, 'loadedmetadata', 15000);
 
     const fps = effectiveRecordingFps(settings);
-    renderStream = canvas.captureStream(fps);
+    renderStream = canvas.captureStream(0);
     const recorderOptions = {
       videoBitsPerSecond: recordingBitrate(settings)
     };
@@ -5741,7 +5859,12 @@ async function renderSmartEffectsVideo(rawBlob, timelinePlan) {
       recorderOptions.mimeType = mimeType;
     }
 
-    const [renderTrack] = renderStream.getVideoTracks();
+    let [renderTrack] = renderStream.getVideoTracks();
+    if (!renderTrack || typeof renderTrack.requestFrame !== 'function') {
+      stopStream(renderStream);
+      renderStream = canvas.captureStream(fps);
+      [renderTrack] = renderStream.getVideoTracks();
+    }
     tuneScreenVideoTrack(renderTrack);
     recorder = new MediaRecorder(renderStream, recorderOptions);
     recorder.addEventListener('dataavailable', (event) => {
@@ -5751,16 +5874,22 @@ async function renderSmartEffectsVideo(rawBlob, timelinePlan) {
     });
 
     recorder.start(1000);
-    const ended = waitForMediaEvent(video, 'ended');
+    const ended = waitForMediaEvent(video, 'ended', Math.max(15000, timelinePlan.durationMs + 10000));
+    const frameIntervalMs = 1000 / Math.max(1, fps);
+    let lastRenderedFrameAt = -Infinity;
     const draw = () => {
       const atMs = Math.min(timelinePlan.durationMs, video.currentTime * 1000);
-      drawSmartTimelineFrame(settings, timelinePlan, atMs);
-      if (renderTrack && typeof renderTrack.requestFrame === 'function') {
-        renderTrack.requestFrame();
+      const now = performance.now();
+      if (now - lastRenderedFrameAt >= frameIntervalMs * 0.92 || video.ended) {
+        drawSmartTimelineFrame(settings, timelinePlan, atMs);
+        if (renderTrack && typeof renderTrack.requestFrame === 'function') {
+          renderTrack.requestFrame();
+        }
+        lastRenderedFrameAt = now;
       }
 
-      if (performance.now() - lastStatusAt > 500) {
-        lastStatusAt = performance.now();
+      if (now - lastStatusAt > 500) {
+        lastStatusAt = now;
         const progress = timelinePlan.durationMs > 0
           ? Math.min(99, Math.round((atMs / timelinePlan.durationMs) * 100))
           : 99;

@@ -33,9 +33,18 @@ function commandExists(command) {
   }
 
   return (process.env.PATH || '').split(path.delimiter).some((directory) => {
+    const candidates = process.platform === 'win32'
+      ? [command, `${command}.exe`, `${command}.cmd`, `${command}.bat`]
+      : [command];
     try {
-      fsSync.accessSync(path.join(directory, command), fsSync.constants.X_OK);
-      return true;
+      return candidates.some((candidate) => {
+        try {
+          fsSync.accessSync(path.join(directory, candidate), fsSync.constants.X_OK);
+          return true;
+        } catch {
+          return false;
+        }
+      });
     } catch {
       return false;
     }

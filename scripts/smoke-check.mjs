@@ -25,7 +25,7 @@ if (pkg.name !== 'smartie') {
   throw new Error('package.json name must stay smartie');
 }
 
-for (const script of ['doctor', 'package:linux', 'eval:telemetry', 'telemetry:adapter']) {
+for (const script of ['doctor', 'package:linux', 'package:win', 'package:all', 'eval:telemetry', 'telemetry:adapter']) {
   if (!pkg.scripts || !pkg.scripts[script]) {
     throw new Error(`package.json is missing ${script} script`);
   }
@@ -33,6 +33,9 @@ for (const script of ['doctor', 'package:linux', 'eval:telemetry', 'telemetry:ad
 
 if (!pkg.scripts['package:linux'].includes('ffmpeg-static')) {
   throw new Error('package:linux must unpack ffmpeg-static for MP4 export');
+}
+if (!pkg.scripts['package:win'].includes('--platform=win32')) {
+  throw new Error('package:win must build a Windows package');
 }
 
 if (!pkg.dependencies || !pkg.dependencies['ffmpeg-static']) {
@@ -111,6 +114,10 @@ for (const feature of [
   'buildAttentionCandidates',
   'chooseAttentionTarget',
   'attentionScale',
+  'cameraOverscan',
+  'cameraOffsetForTarget',
+  'cameraFrameForTarget',
+  'recenterDirectorSegment',
   'pointerIntentPoint',
   'attentionCandidate',
   'normalizedDistance',
@@ -206,6 +213,7 @@ for (const feature of [
   'directorStyleProfile',
   'directorCandidateFromEvent',
   'eventSourceScore',
+  'targetOutputPosition',
   'directorAnchorStrength',
   'mergeDirectorTarget',
   'mergeDirectorCandidates',
@@ -237,7 +245,7 @@ for (const feature of [
 }
 
 const main = readFileSync(join(root, 'src/main.js'), 'utf8');
-for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieProject', 'smartieProjectPathFor', 'smartie.project.v1', 'attention.timeline.json', 'cursor.timeline.json', 'click.timeline.json', 'keyboard.timeline.json', 'motion.timeline.json', 'accessibility.timeline.json', 'native.timeline.json', 'proxy.timeline.json', 'camera.plan.json', 'render.qa.json', 'projectFileMode', 'getActiveWindowSnapshot', 'NativeTelemetryCore', 'start-native-telemetry', 'get-native-telemetry', 'get-telemetry-adapter-status', 'install-telemetry-adapter', 'nativeTelemetryTimeline', 'createProxyPreview', 'save-camera-plan', 'get-performance-profile', 'create-recording-session', 'append-recording-chunk', 'finalize-recording-session', 'read-recording-session', 'discard-recording-session', 'classifyPerformanceProfile', 'recordingSessions', 'materializeRecordingInput']) {
+for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGlobalShortcuts', 'writeRecordingFiles', 'sidecarPathFor', 'chapterPathFor', 'buildMarkerWebVtt', 'backgroundThrottling', 'transcodeToMp4', 'mp4PathFor', 'executableExists', 'resolvedFfmpegPath', 'muxAudioIntoWebm', 'audioSourceBytes', 'writeSmartieProject', 'smartieProjectPathFor', 'smartie.project.v1', 'attention.timeline.json', 'cursor.timeline.json', 'click.timeline.json', 'keyboard.timeline.json', 'motion.timeline.json', 'accessibility.timeline.json', 'native.timeline.json', 'proxy.timeline.json', 'camera.plan.json', 'render.qa.json', 'projectFileMode', 'getActiveWindowSnapshot', 'NativeTelemetryCore', 'start-native-telemetry', 'get-native-telemetry', 'get-telemetry-adapter-status', 'install-telemetry-adapter', 'nativeTelemetryTimeline', 'createProxyPreview', 'save-camera-plan', 'get-performance-profile', 'create-recording-session', 'append-recording-chunk', 'finalize-recording-session', 'read-recording-session', 'discard-recording-session', 'classifyPerformanceProfile', 'recordingSessions', 'materializeRecordingInput']) {
   if (!main.includes(feature)) {
     throw new Error(`Main process is missing shortcut feature: ${feature}`);
   }
