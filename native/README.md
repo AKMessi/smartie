@@ -24,6 +24,16 @@ SMARTIE_TELEMETRY_HELPER=/path/to/smartie-telemetry-core npm start
 The helper must speak `smartie.native_telemetry.helper.v1` JSONL over stdio.
 Events are stored in `native.timeline.json` and graded in `render.qa.json`.
 
+On Windows, Smartie auto-discovers the bundled PowerShell/User32 helper:
+
+```text
+native/windows/smartie-telemetry-helper.ps1
+```
+
+It streams global pointer, click, foreground-window, and privacy-aware keyboard
+intent events through the same JSONL helper protocol. It redacts plain printable
+typing as `Text` unless the key is part of a shortcut/navigation intent.
+
 Install/status commands:
 
 ```bash

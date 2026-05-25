@@ -1,7 +1,8 @@
 # Smartie
 
-Smartie is a smart screen recorder for polished demo videos, with a Linux-first
-native telemetry pipeline and packaged desktop builds for Linux and Windows.
+Smartie is a source-available, noncommercial smart screen recorder for polished
+demo videos, with native telemetry pipelines and packaged desktop builds for
+Linux and Windows.
 It records a selected screen or window through Electron with a hybrid smart
 pipeline by default: capture stays native and low-latency during the take, then
 the smart zoom, cursor polish, overlays, and framing effects are baked into the
@@ -16,8 +17,9 @@ saved video after recording.
 - Adaptive performance governor with Auto, Potato saver, Ultra smooth, Balanced, and Max quality profiles.
 - Disk-backed recording sessions that stream MediaRecorder chunks to the main process instead of holding the whole take in renderer memory.
 - Smart Director v2 auto zoom with telemetry capture, cue scoring, offline camera-plan compilation, render QA, and smooth keyframed playback.
-- Native telemetry core with Wayland-aware quality grading, a compositor-adapter socket, optional stdio helper support, and per-take native telemetry artifacts.
+- Native telemetry core with Wayland-aware quality grading, a compositor-adapter socket, Windows User32 helper support, optional stdio helper support, and per-take native telemetry artifacts.
 - One-click/CLI GNOME Shell telemetry adapter install flow plus packaged KWin telemetry adapter assets.
+- Bundled Windows native telemetry helper for cursor, clicks, foreground window bounds, and privacy-aware keyboard intent.
 - Director failsafe planning for Wayland/window-source recordings where cursor telemetry is unavailable or stuck.
 - Smart focus modes for Smart Director, cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Director style presets for subtle, balanced, or cinematic camera plans.
@@ -59,7 +61,14 @@ saved video after recording.
 - Low-latency Smartie hybrid engine, native recording engine, live smart-effects engine, adaptive optimization presets, quality presets,
   frame-rate control, smart-effects layout control, countdown, elapsed timer, WebM export, and optional bundled-FFmpeg MP4 copy.
 - Linux desktop support through Electron desktop capture APIs and GNOME/KWin telemetry adapters.
-- Windows desktop package support through Electron desktop capture; native compositor telemetry is currently Linux-first.
+- Windows desktop package support through Electron desktop capture and bundled User32 native telemetry.
+
+## License
+
+Smartie is licensed under the PolyForm Noncommercial License 1.0.0. Commercial
+use is not permitted without a separate commercial license from the copyright
+holder. This is source-available software with a noncommercial restriction, not
+an OSI-approved open-source license.
 
 ## Requirements
 
@@ -176,6 +185,12 @@ still needs a small D-Bus/log bridge helper. Production native helpers can be
 attached with `SMARTIE_TELEMETRY_HELPER=/path/to/helper`. On GNOME Wayland, a
 freshly installed local extension may show as pending until the next login.
 
+On Windows, Smartie automatically starts the bundled
+`native/windows/smartie-telemetry-helper.ps1` helper while recording. The helper
+uses Win32/User32 APIs through PowerShell to stream pointer movement, mouse
+click transitions, foreground window metadata, and privacy-aware keyboard intent
+events into `native.timeline.json`.
+
 ## Package
 
 ```bash
@@ -183,12 +198,49 @@ npm run package:linux
 npm run package:win
 ```
 
-Packages are written to `dist/`. The Linux package includes the Smartie native
-telemetry assets. The Windows package runs the core recorder and post-rendered
-smart effects through Electron desktop capture; Linux compositor telemetry
-adapters are not loaded on Windows. MP4 export uses bundled FFmpeg when the
-package is built on the target platform, and falls back to a system `ffmpeg`
-binary on `PATH` when a cross-built package does not contain a runnable FFmpeg.
+Folder packages are written to `dist/` and are used for quick smoke checks.
+
+Installer-style release artifacts are built with:
+
+```bash
+npm run release:linux
+npm run release:win
+```
+
+Release artifacts are written to `release/`. Linux release builds produce an
+AppImage. Windows release builds produce an NSIS installer. GitHub tag builds
+publish release artifacts with SHA256 checksums.
+
+Build `release:win` on Windows, or on Linux with Wine installed. The GitHub
+release workflow builds the Windows installer on `windows-latest`.
+
+MP4 export uses bundled FFmpeg when the package is built on the target platform,
+and falls back to a system `ffmpeg` binary on `PATH` when a cross-built package
+does not contain a runnable FFmpeg.
+
+## Release Checklist
+
+Before publishing a release:
+
+```bash
+npm ci
+npm run check
+npm run smoke
+npm audit --audit-level=high
+npm run doctor
+npm run package:linux
+dist/Smartie-linux-x64/Smartie --no-sandbox --smoke-test
+```
+
+Windows packaging and native telemetry must also be verified on Windows:
+
+```powershell
+npm ci
+npm run check
+npm run doctor
+npm run package:win
+npm run release:win
+```
 
 ## Notes
 

@@ -44,7 +44,7 @@ function checkPlatform() {
   const detail = process.platform === 'linux'
     ? `${process.platform}/${process.arch}; native telemetry optimized for Linux desktops`
     : process.platform === 'win32'
-      ? `${process.platform}/${process.arch}; Windows package uses Electron desktop capture with fallback telemetry`
+      ? `${process.platform}/${process.arch}; Windows package uses Electron desktop capture plus bundled User32 native telemetry`
       : `${process.platform}/${process.arch}; Smartie packages are currently tuned for Linux and Windows x64`;
   add(supported ? 'PASS' : 'WARN', 'Platform', detail);
 }
@@ -94,8 +94,16 @@ function checkDesktopSession() {
 }
 
 function checkNativeTelemetry() {
+  if (process.platform === 'win32') {
+    const helperPath = join(root, 'native', 'windows', 'smartie-telemetry-helper.ps1');
+    const hasPowerShell = commandExists('powershell') || commandExists('pwsh') || commandExists('powershell.exe') || commandExists('pwsh.exe');
+    add(existsSync(helperPath) ? 'PASS' : 'FAIL', 'Windows native telemetry helper', existsSync(helperPath) ? 'bundled User32 helper script' : 'missing native/windows/smartie-telemetry-helper.ps1');
+    add(hasPowerShell ? 'PASS' : 'FAIL', 'Windows telemetry runtime', hasPowerShell ? 'PowerShell available for bundled helper' : 'PowerShell or PowerShell Core required');
+    return;
+  }
+
   if (process.platform !== 'linux') {
-    add('PASS', 'Native telemetry helper', 'Linux compositor adapters disabled; Smartie will use portable capture telemetry');
+    add('WARN', 'Native telemetry helper', 'No bundled native telemetry helper for this platform yet');
     return;
   }
 
@@ -149,6 +157,8 @@ function checkNativeTelemetry() {
 function checkPackageTool() {
   const packagerPath = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'electron-packager.cmd' : 'electron-packager');
   add(existsSync(packagerPath) ? 'PASS' : 'FAIL', 'Desktop packager', existsSync(packagerPath) ? 'installed' : 'run npm install');
+  const builderPath = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder');
+  add(existsSync(builderPath) ? 'PASS' : 'FAIL', 'Release builder', existsSync(builderPath) ? 'installed' : 'run npm install');
 }
 
 function checkBundledFfmpeg() {

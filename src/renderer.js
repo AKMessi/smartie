@@ -145,6 +145,8 @@ const state = {
     lastCursorSampleAt: -Infinity,
     lastMotionSampleAt: -Infinity,
     lastNativeClickAt: -Infinity,
+    lastNativeKeyboardAt: -Infinity,
+    lastNativeKeyboardSignature: '',
     lastAccessibilityTitle: '',
     nativeQuality: null,
     nativeSession: null
@@ -1899,6 +1901,45 @@ function handleNativeClickEvent(event, enriched, atMs) {
   pushSmartPulseAt(x, y, atMs, 'native-click');
 }
 
+function handleNativeKeyboardEvent(event, atMs) {
+  if (event.action && event.action !== 'press') {
+    return;
+  }
+
+  const keys = Array.isArray(event.keys) && event.keys.length > 0
+    ? event.keys.map((key) => String(key).slice(0, 24)).filter(Boolean).slice(-4)
+    : event.key
+      ? [String(event.key).slice(0, 24)]
+      : [];
+  if (keys.length === 0) {
+    return;
+  }
+
+  const signature = keys.join('+');
+  if (signature === state.telemetry.lastNativeKeyboardSignature && atMs - state.telemetry.lastNativeKeyboardAt < 90) {
+    return;
+  }
+
+  state.telemetry.lastNativeKeyboardSignature = signature;
+  state.telemetry.lastNativeKeyboardAt = atMs;
+  state.keys = keys.slice(-4);
+  window.clearTimeout(updateKeyOverlay.clearId);
+  updateKeyOverlay.clearId = window.setTimeout(() => {
+    state.keys = [];
+  }, 1400);
+
+  boundedPush(state.telemetry.keyboard, {
+    time: roundTo(atMs / 1000, 3),
+    time_ms: Math.round(atMs),
+    keys,
+    key: event.key || keys[keys.length - 1],
+    modifiers: event.modifiers || {},
+    source: 'native-keyboard',
+    provider: event.provider || 'native-helper',
+    privacy: event.privacy || null
+  }, performanceProfile(state.recordingSettings || getSettings()).maxKeyboardEvents);
+}
+
 function recordNativeTelemetrySnapshot(snapshot) {
   if (!state.recording || state.paused || !snapshot) {
     return;
@@ -1950,6 +1991,9 @@ function recordNativeTelemetrySnapshot(snapshot) {
     }
     if (event.type === 'click') {
       handleNativeClickEvent(event, enriched, eventAtMs);
+    }
+    if (event.type === 'keyboard') {
+      handleNativeKeyboardEvent(event, eventAtMs);
     }
     boundedPush(state.telemetry.native, {
       ...enriched

@@ -71,6 +71,10 @@ function kwinAdapterSourcePath() {
   return path.join(repoRoot(), 'native', 'linux', 'kwin', 'smartie-telemetry');
 }
 
+function windowsHelperSourcePath() {
+  return path.join(repoRoot(), 'native', 'windows', 'smartie-telemetry-helper.ps1');
+}
+
 function parseGnomeExtensionInfo(output) {
   const info = {};
   for (const line of String(output || '').split(/\r?\n/)) {
@@ -208,6 +212,7 @@ async function statusTelemetryAdapters() {
   const desktop = desktopName();
   const session = sessionType();
   const isLinux = process.platform === 'linux';
+  const isWindows = process.platform === 'win32';
   const isGnome = desktop.includes('gnome');
   const isKde = desktop.includes('kde') || desktop.includes('plasma');
   const [gnomeInfo, gnomeEnabledSetting] = await Promise.all([
@@ -216,6 +221,7 @@ async function statusTelemetryAdapters() {
   ]);
   const gnomeSource = gnomeExtensionSourcePath();
   const kwinSource = kwinAdapterSourcePath();
+  const windowsSource = windowsHelperSourcePath();
   const helperPath = process.env.SMARTIE_TELEMETRY_HELPER || null;
   const socketPath = process.platform === 'linux'
     ? path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), 'smartie-telemetry.sock')
@@ -255,9 +261,33 @@ async function statusTelemetryAdapters() {
     error: isKde ? null : 'not-kde'
   };
 
-  const adapters = [gnomeAdapter, kwinAdapter];
+  const windowsAdapter = {
+    id: 'windows-user32',
+    label: 'Windows User32',
+    supported: isWindows,
+    recommended: isWindows,
+    sourcePath: windowsSource,
+    sourceAvailable: fsSync.existsSync(windowsSource),
+    installPath: windowsSource,
+    installed: fsSync.existsSync(windowsSource),
+    enabled: isWindows && fsSync.existsSync(windowsSource),
+    active: false,
+    commandAvailable: commandExists('powershell') || commandExists('pwsh') || commandExists('powershell.exe') || commandExists('pwsh.exe'),
+    state: isWindows && fsSync.existsSync(windowsSource) ? 'BUNDLED' : null,
+    error: isWindows
+      ? fsSync.existsSync(windowsSource)
+        ? null
+        : 'helper-script-missing'
+      : 'not-windows'
+  };
+
+  const adapters = [gnomeAdapter, kwinAdapter, windowsAdapter];
   const best = adapters.find((adapter) => adapter.supported && adapter.recommended) || adapters.find((adapter) => adapter.recommended) || null;
-  const ready = Boolean(gnomeAdapter.active || (helperPath && fsSync.existsSync(helperPath)));
+  const ready = Boolean(
+    gnomeAdapter.active
+    || windowsAdapter.supported && windowsAdapter.sourceAvailable && windowsAdapter.commandAvailable
+    || helperPath && fsSync.existsSync(helperPath)
+  );
 
   return {
     schema: ADAPTER_STATUS_SCHEMA,
@@ -270,11 +300,11 @@ async function statusTelemetryAdapters() {
     ready,
     bestAdapter: best ? best.id : null,
     adapters,
-    notes: adapterNotes({ gnomeAdapter, kwinAdapter, helperPath })
+    notes: adapterNotes({ gnomeAdapter, kwinAdapter, windowsAdapter, helperPath })
   };
 }
 
-function adapterNotes({ gnomeAdapter, kwinAdapter, helperPath }) {
+function adapterNotes({ gnomeAdapter, kwinAdapter, windowsAdapter, helperPath }) {
   const notes = [];
   if (gnomeAdapter.recommended && !gnomeAdapter.active) {
     notes.push(gnomeAdapter.pendingRestart
@@ -286,8 +316,14 @@ function adapterNotes({ gnomeAdapter, kwinAdapter, helperPath }) {
   if (kwinAdapter.recommended) {
     notes.push('KWin adapter package is included, but the runtime bridge still requires a helper that can receive KWin D-Bus events.');
   }
+  if (windowsAdapter.recommended && !windowsAdapter.commandAvailable) {
+    notes.push('PowerShell is required to run the bundled Windows User32 telemetry helper.');
+  }
+  if (windowsAdapter.recommended && windowsAdapter.commandAvailable && windowsAdapter.sourceAvailable) {
+    notes.push('Windows User32 helper is bundled and starts automatically while recording.');
+  }
   if (!helperPath) {
-    notes.push('SMARTIE_TELEMETRY_HELPER is not set; Smartie will use compositor socket adapters when available.');
+    notes.push('SMARTIE_TELEMETRY_HELPER is not set; Smartie will use bundled or compositor adapters when available.');
   }
   return notes;
 }

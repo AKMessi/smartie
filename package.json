@@ -1,34 +1,103 @@
 {
   "name": "smartie",
   "version": "0.1.0",
-  "description": "A smart screen recorder for polished demo videos with smooth auto zoom and feature toggles.",
+  "description": "A telemetry-first smart screen recorder for polished demo videos.",
   "main": "src/main.js",
   "scripts": {
     "start": "electron --no-sandbox .",
     "smoke": "electron --no-sandbox . --smoke-test",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/native-telemetry.js && node --check src/telemetry-adapters.js && node --check scripts/doctor.mjs && node --check scripts/eval-director.mjs && node --check scripts/eval-telemetry.mjs && node --check scripts/telemetry-adapter.mjs && node scripts/smoke-check.mjs",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/native-telemetry.js && node --check src/telemetry-adapters.js && node --check scripts/doctor.mjs && node --check scripts/eval-director.mjs && node --check scripts/eval-telemetry.mjs && node --check scripts/package.mjs && node --check scripts/telemetry-adapter.mjs && node scripts/smoke-check.mjs",
     "eval:director": "node scripts/eval-director.mjs",
     "eval:telemetry": "node scripts/eval-telemetry.mjs",
     "telemetry:adapter": "node scripts/telemetry-adapter.mjs",
     "doctor": "node scripts/doctor.mjs",
-    "package:linux": "electron-packager . Smartie --platform=linux --arch=x64 --out=dist --overwrite --prune=true --asar.unpack='**/node_modules/ffmpeg-static/**' --ignore='^/dist($|/)' --ignore='^/node_modules/.cache($|/)'",
-    "package:win": "electron-packager . Smartie --platform=win32 --arch=x64 --out=dist --overwrite --prune=true --asar.unpack='**/node_modules/ffmpeg-static/**' --ignore='^/dist($|/)' --ignore='^/node_modules/.cache($|/)'",
-    "package:all": "npm run package:linux && npm run package:win"
+    "package:linux": "node scripts/package.mjs linux",
+    "package:win": "node scripts/package.mjs win32",
+    "package:all": "npm run package:linux && npm run package:win",
+    "release:linux": "electron-builder --linux AppImage --x64",
+    "release:win": "electron-builder --win nsis --x64",
+    "release:all": "npm run release:linux && npm run release:win"
   },
   "keywords": [
     "screen-recorder",
     "electron",
     "demo",
     "smart-zoom",
+    "screen-recording",
+    "telemetry",
+    "video",
     "smartie"
   ],
   "author": "AKMessi",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "homepage": "https://github.com/AKMessi/smartie#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AKMessi/smartie.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AKMessi/smartie/issues"
+  },
   "devDependencies": {
     "@electron/packager": "^20.0.0",
-    "electron": "^42.2.0"
+    "electron": "^42.2.0",
+    "electron-builder": "^26.8.1"
   },
   "dependencies": {
     "ffmpeg-static": "^5.3.0"
+  },
+  "build": {
+    "appId": "dev.akmessi.smartie",
+    "productName": "Smartie",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**",
+      "native/**",
+      "package.json",
+      "README.md",
+      "LICENSE",
+      "NOTICE",
+      "PRIVACY.md",
+      "SECURITY.md"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "native/**"
+    ],
+    "extraMetadata": {
+      "license": "PolyForm-Noncommercial-1.0.0"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo",
+      "maintainer": "AKMessi"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "AKMessi",
+      "repo": "smartie"
+    }
   }
 }

@@ -43,14 +43,67 @@ function commandExistsSync(command) {
 
   const pathValue = process.env.PATH || '';
   return pathValue.split(path.delimiter).some((directory) => {
-    const candidate = path.join(directory, command);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
+    const candidates = process.platform === 'win32' && !path.extname(command)
+      ? [command, `${command}.exe`, `${command}.cmd`, `${command}.bat`]
+      : [command];
+    return candidates.some((candidate) => {
+      try {
+        fs.accessSync(path.join(directory, candidate), fs.constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
   });
+}
+
+function appResourcePath(...parts) {
+  const candidate = path.resolve(__dirname, '..', ...parts);
+  const unpacked = candidate.replace('app.asar', 'app.asar.unpacked');
+  return fs.existsSync(unpacked) ? unpacked : candidate;
+}
+
+function windowsPowerShellCommand() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  return ['pwsh.exe', 'powershell.exe', 'pwsh', 'powershell'].find(commandExistsSync) || null;
+}
+
+function windowsNativeHelperPath() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const helperPath = appResourcePath('native', 'windows', 'smartie-telemetry-helper.ps1');
+  return fs.existsSync(helperPath) ? helperPath : null;
+}
+
+function windowsNativeHelperStatus(helperActive = false) {
+  const sourcePath = appResourcePath('native', 'windows', 'smartie-telemetry-helper.ps1');
+  const sourceAvailable = fs.existsSync(sourcePath);
+  const shellCommand = windowsPowerShellCommand();
+  return {
+    id: 'windows-user32',
+    label: 'Windows User32 native telemetry',
+    supported: process.platform === 'win32',
+    recommended: process.platform === 'win32',
+    available: process.platform === 'win32' && sourceAvailable && Boolean(shellCommand),
+    active: Boolean(helperActive),
+    provider: 'powershell-user32-jsonl',
+    sourcePath,
+    sourceAvailable,
+    commandAvailable: Boolean(shellCommand),
+    command: shellCommand,
+    reason: process.platform !== 'win32'
+      ? 'not-windows'
+      : sourceAvailable && shellCommand
+        ? (helperActive ? 'running' : 'available')
+        : !sourceAvailable
+          ? 'helper-script-missing'
+          : 'powershell-unavailable'
+  };
 }
 
 async function commandOutput(command, args = [], timeout = 650) {
@@ -342,12 +395,43 @@ class NativeTelemetryCore {
       return configured;
     }
 
-    const bundled = path.resolve(__dirname, '..', 'native', 'bin', process.platform, 'smartie-telemetry-core');
+    const windowsHelper = windowsNativeHelperPath();
+    if (windowsHelper) {
+      return windowsHelper;
+    }
+
+    const bundled = appResourcePath('native', 'bin', process.platform, 'smartie-telemetry-core');
     if (fs.existsSync(bundled)) {
       return bundled;
     }
 
     return null;
+  }
+
+  helperLaunchSpec() {
+    const helperPath = this.helperPath();
+    if (!helperPath) {
+      return null;
+    }
+
+    if (process.platform === 'win32' && path.extname(helperPath).toLowerCase() === '.ps1') {
+      const shellCommand = windowsPowerShellCommand();
+      if (!shellCommand) {
+        return null;
+      }
+
+      return {
+        command: shellCommand,
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, '--stdio', '--protocol', HELPER_PROTOCOL],
+        path: helperPath
+      };
+    }
+
+    return {
+      command: helperPath,
+      args: ['--stdio', '--protocol', HELPER_PROTOCOL],
+      path: helperPath
+    };
   }
 
   async diagnostics() {
@@ -367,6 +451,7 @@ class NativeTelemetryCore {
     const desktop = desktopName();
     const helperActive = Boolean(this.helper && !this.helper.killed);
     const socketActive = Boolean(this.socketServer);
+    const windowsAdapter = windowsNativeHelperStatus(helperActive);
 
     const adapters = [
       {
@@ -378,6 +463,7 @@ class NativeTelemetryCore {
         path: this.socketPath,
         reason: socketActive ? 'listening' : 'not-listening'
       },
+      windowsAdapter,
       {
         id: 'external-helper',
         label: 'Smartie native helper',
@@ -423,7 +509,7 @@ class NativeTelemetryCore {
       }
     ];
 
-    const precisionAdapter = adapters.find((adapter) => adapter.active && ['external-helper', 'kwin', 'gnome-shell'].includes(adapter.id));
+    const precisionAdapter = adapters.find((adapter) => adapter.active && ['windows-user32', 'external-helper', 'kwin', 'gnome-shell'].includes(adapter.id));
     const x11Adapter = adapters.find((adapter) => adapter.id === 'x11-xdotool' && adapter.active);
     const portalReady = adapters.find((adapter) => adapter.id === 'xdg-screencast')?.available;
     const accessibilityReady = adapters.find((adapter) => adapter.id === 'at-spi')?.available;
@@ -445,6 +531,16 @@ class NativeTelemetryCore {
   }
 
   qualityFromAdapters({ precisionAdapter, x11Adapter, portalReady, accessibilityReady }) {
+    if (process.platform === 'win32' && precisionAdapter) {
+      return {
+        tier: 'precision',
+        score: 0.94,
+        native: true,
+        perfectCandidate: true,
+        reason: precisionAdapter.id
+      };
+    }
+
     if (precisionAdapter && accessibilityReady) {
       return {
         tier: 'precision',
@@ -490,7 +586,11 @@ class NativeTelemetryCore {
       score: 0.34,
       native: false,
       perfectCandidate: false,
-      reason: isLinuxWayland() ? 'wayland-needs-compositor-adapter' : 'no-native-provider'
+      reason: process.platform === 'win32'
+        ? 'windows-native-helper-unavailable'
+        : isLinuxWayland()
+          ? 'wayland-needs-compositor-adapter'
+          : 'no-native-provider'
     };
   }
 
@@ -510,6 +610,11 @@ class NativeTelemetryCore {
       }
     } else if (process.platform === 'linux') {
       guidance.push('Install xdotool on X11 for native pointer/window telemetry.');
+    } else if (process.platform === 'win32') {
+      guidance.push('Use the bundled Windows User32 helper for native pointer, click, active-window, and keyboard-intent telemetry.');
+      if (!windowsPowerShellCommand()) {
+        guidance.push('PowerShell is required to run the bundled Windows telemetry helper.');
+      }
     }
 
     if (!this.helperPath()) {
@@ -660,13 +765,12 @@ class NativeTelemetryCore {
   }
 
   startHelper() {
-    const helperPath = this.helperPath();
-    if (!helperPath || this.helper) {
+    const launchSpec = this.helperLaunchSpec();
+    if (!launchSpec || this.helper) {
       return;
     }
 
-    const args = ['--stdio', '--protocol', HELPER_PROTOCOL];
-    this.helper = spawn(helperPath, args, {
+    this.helper = spawn(launchSpec.command, launchSpec.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -703,6 +807,7 @@ class NativeTelemetryCore {
     this.writeHelperCommand({
       type: 'start',
       protocol: HELPER_PROTOCOL,
+      helper_path: launchSpec.path,
       session: this.session
     });
   }

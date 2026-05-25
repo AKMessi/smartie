@@ -10,7 +10,22 @@ const requiredFiles = [
   'src/preload.js',
   'src/index.html',
   'src/styles.css',
-  'src/renderer.js'
+  'src/renderer.js',
+  'scripts/package.mjs',
+  'native/windows/smartie-telemetry-helper.ps1',
+  'LICENSE',
+  'NOTICE',
+  'PRIVACY.md',
+  'SECURITY.md',
+  'CONTRIBUTING.md',
+  'CODE_OF_CONDUCT.md',
+  'CHANGELOG.md',
+  'ROADMAP.md',
+  '.github/workflows/ci.yml',
+  '.github/workflows/release.yml',
+  '.github/ISSUE_TEMPLATE/bug_report.md',
+  '.github/ISSUE_TEMPLATE/feature_request.md',
+  '.github/ISSUE_TEMPLATE/recording_quality.md'
 ];
 
 for (const file of requiredFiles) {
@@ -24,22 +39,43 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 if (pkg.name !== 'smartie') {
   throw new Error('package.json name must stay smartie');
 }
+if (pkg.license !== 'PolyForm-Noncommercial-1.0.0') {
+  throw new Error('Smartie must stay noncommercial licensed for public release');
+}
+if (!pkg.repository?.url || !pkg.bugs?.url || !pkg.homepage) {
+  throw new Error('package.json must include repository, bugs, and homepage metadata');
+}
 
-for (const script of ['doctor', 'package:linux', 'package:win', 'package:all', 'eval:telemetry', 'telemetry:adapter']) {
+for (const script of ['doctor', 'package:linux', 'package:win', 'package:all', 'release:linux', 'release:win', 'release:all', 'eval:telemetry', 'telemetry:adapter']) {
   if (!pkg.scripts || !pkg.scripts[script]) {
     throw new Error(`package.json is missing ${script} script`);
   }
 }
 
-if (!pkg.scripts['package:linux'].includes('ffmpeg-static')) {
-  throw new Error('package:linux must unpack ffmpeg-static for MP4 export');
+if (!pkg.scripts['package:linux'].includes('scripts/package.mjs')) {
+  throw new Error('package:linux must use the cross-platform package script');
 }
-if (!pkg.scripts['package:win'].includes('--platform=win32')) {
+if (!pkg.scripts['package:win'].includes('win32')) {
   throw new Error('package:win must build a Windows package');
+}
+if (!pkg.scripts['release:linux'].includes('electron-builder') || !pkg.scripts['release:linux'].includes('AppImage')) {
+  throw new Error('release:linux must build a Linux AppImage');
+}
+if (!pkg.scripts['release:win'].includes('electron-builder') || !pkg.scripts['release:win'].includes('nsis')) {
+  throw new Error('release:win must build a Windows installer');
 }
 
 if (!pkg.dependencies || !pkg.dependencies['ffmpeg-static']) {
   throw new Error('package.json is missing bundled ffmpeg-static dependency');
+}
+if (!pkg.devDependencies || !pkg.devDependencies['electron-builder']) {
+  throw new Error('package.json is missing electron-builder for release packaging');
+}
+if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.some((item) => item.includes('ffmpeg-static')) || !pkg.build.asarUnpack.some((item) => item.includes('native'))) {
+  throw new Error('electron-builder must unpack FFmpeg and native telemetry assets');
+}
+if (!String(JSON.stringify(pkg.build?.linux || {})).includes('AppImage') || !String(JSON.stringify(pkg.build?.win || {})).includes('nsis')) {
+  throw new Error('electron-builder config must include Linux AppImage and Windows NSIS targets');
 }
 
 const html = readFileSync(join(root, 'src/index.html'), 'utf8');
@@ -178,6 +214,7 @@ for (const feature of [
   'recordNativeTelemetrySnapshot',
   'nativeEventRecordingMs',
   'handleNativeClickEvent',
+  'handleNativeKeyboardEvent',
   'pushSmartPulseAt',
   'startNativeTelemetrySession',
   'stopNativeTelemetrySession',
@@ -252,9 +289,16 @@ for (const feature of ['globalShortcut', 'GlobalShortcutsPortal', 'registerGloba
 }
 
 const nativeTelemetry = readFileSync(join(root, 'src/native-telemetry.js'), 'utf8');
-for (const feature of ['NativeTelemetryCore', 'smartie.native_telemetry.snapshot.v1', 'smartie.native_telemetry.diagnostics.v1', 'smartie.native_telemetry.helper.v1', 'startSocketServer', 'pointerSnapshot', 'activeWindowSnapshot', 'diagnostics']) {
+for (const feature of ['NativeTelemetryCore', 'smartie.native_telemetry.snapshot.v1', 'smartie.native_telemetry.diagnostics.v1', 'smartie.native_telemetry.helper.v1', 'startSocketServer', 'pointerSnapshot', 'activeWindowSnapshot', 'diagnostics', 'windowsPowerShellCommand', 'windowsNativeHelperStatus', 'helperLaunchSpec', 'windows-user32']) {
   if (!nativeTelemetry.includes(feature)) {
     throw new Error(`Native telemetry core is missing feature: ${feature}`);
+  }
+}
+
+const windowsHelper = readFileSync(join(root, 'native/windows/smartie-telemetry-helper.ps1'), 'utf8');
+for (const feature of ['GetCursorPos', 'GetForegroundWindow', 'GetWindowRect', 'GetAsyncKeyState', 'text-redacted', 'windows-user32']) {
+  if (!windowsHelper.includes(feature)) {
+    throw new Error(`Windows telemetry helper is missing feature: ${feature}`);
   }
 }
 
