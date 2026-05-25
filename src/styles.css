@@ -451,6 +451,30 @@ canvas {
   gap: 8px;
 }
 
+.telemetry-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.telemetry-row output {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.telemetry-field.ready output {
+  color: var(--teal);
+}
+
+.telemetry-field.warn output {
+  color: var(--amber);
+}
+
 .meter-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

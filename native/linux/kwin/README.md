@@ -1,8 +1,12 @@
 # KWin Precision Adapter
 
 KWin exposes compositor-owned cursor position, focused window, and window
-geometry to KWin scripts/effects. Smartie can consume those events through the
-native helper protocol:
+geometry to KWin scripts/effects. The bundled `smartie-telemetry` KWin script
+publishes JSON events with the `SMARTIE_TELEMETRY ` prefix through KWin script
+logging/print output.
+
+Smartie can consume those events through a native helper that listens to KWin's
+script output or D-Bus bridge and forwards the JSONL events to:
 
 ```bash
 SMARTIE_TELEMETRY_HELPER=/path/to/kwin-smartie-helper npm start

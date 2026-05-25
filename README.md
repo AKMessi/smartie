@@ -16,6 +16,7 @@ saved video after recording.
 - Disk-backed recording sessions that stream MediaRecorder chunks to the main process instead of holding the whole take in renderer memory.
 - Smart Director v2 auto zoom with telemetry capture, cue scoring, offline camera-plan compilation, render QA, and smooth keyframed playback.
 - Native telemetry core with Wayland-aware quality grading, a compositor-adapter socket, optional stdio helper support, and per-take native telemetry artifacts.
+- One-click/CLI GNOME Shell telemetry adapter install flow plus packaged KWin telemetry adapter assets.
 - Director failsafe planning for Wayland/window-source recordings where cursor telemetry is unavailable or stuck.
 - Smart focus modes for Smart Director, cursor follow, motion-aware targeting, click-to-lock focus, and forced wide shot.
 - Director style presets for subtle, balanced, or cinematic camera plans.
@@ -101,6 +102,7 @@ the OS already owns it.
 npm run check
 npm run smoke
 npm run doctor
+npm run telemetry:adapter -- status
 npm run eval:telemetry -- /path/to/take.smartie-project
 npm run eval:director -- /path/to/take.smartie-project
 ```
@@ -164,9 +166,13 @@ On Linux/X11, semantic context can include active window and pointer telemetry
 through `xdotool` when available. On Wayland, Smartie opens
 `$XDG_RUNTIME_DIR/smartie-telemetry.sock` during recording so trusted compositor
 adapters can stream cursor, focus, and window geometry without loading the
-capture loop. The bundled GNOME Shell adapter prototype lives under
-`native/linux/gnome-shell/smartie-telemetry@akmessi`, and production native
-helpers can be attached with `SMARTIE_TELEMETRY_HELPER=/path/to/helper`.
+capture loop. The bundled GNOME Shell adapter lives under
+`native/linux/gnome-shell/smartie-telemetry@akmessi` and can be installed from
+the app or with `npm run telemetry:adapter -- install`. KWin adapter package
+assets live under `native/linux/kwin/smartie-telemetry`; KWin runtime streaming
+still needs a small D-Bus/log bridge helper. Production native helpers can be
+attached with `SMARTIE_TELEMETRY_HELPER=/path/to/helper`. On GNOME Wayland, a
+freshly installed local extension may show as pending until the next login.
 
 ## Package
 

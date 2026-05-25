@@ -24,6 +24,19 @@ SMARTIE_TELEMETRY_HELPER=/path/to/smartie-telemetry-core npm start
 The helper must speak `smartie.native_telemetry.helper.v1` JSONL over stdio.
 Events are stored in `native.timeline.json` and graded in `render.qa.json`.
 
+Install/status commands:
+
+```bash
+npm run telemetry:adapter -- status
+npm run telemetry:adapter -- install
+npm run telemetry:adapter -- install-gnome
+npm run telemetry:adapter -- uninstall-gnome
+```
+
+On GNOME Wayland, newly installed local extensions may be marked
+`pendingRestart` until the next login because the running GNOME Shell process
+does not always discover new extension UUIDs immediately.
+
 Telemetry tiers:
 
 - `precision`: compositor/native pointer plus semantic accessibility context.

@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 
@@ -90,6 +91,8 @@ function checkNativeTelemetry() {
   const hasXdotool = commandExists('xdotool');
   const hasQdbus = commandExists('qdbus6') || commandExists('qdbus');
   const hasGnomeExtensions = commandExists('gnome-extensions');
+  const gnomeAdapterPath = join(homedir(), '.local', 'share', 'gnome-shell', 'extensions', 'smartie-telemetry@akmessi');
+  const kwinAdapterPath = join(root, 'native', 'linux', 'kwin', 'smartie-telemetry', 'contents', 'code', 'main.js');
 
   add(hasHelper ? 'PASS' : 'WARN', 'Native telemetry helper', hasHelper ? helperPath : 'SMARTIE_TELEMETRY_HELPER not set; compositor socket adapters can still connect while recording');
 
@@ -103,6 +106,7 @@ function checkNativeTelemetry() {
 
   if (session === 'wayland' && desktop.includes('gnome')) {
     add(hasGnomeExtensions ? 'PASS' : 'WARN', 'GNOME telemetry adapter path', hasGnomeExtensions ? 'gnome-extensions available' : 'gnome-extensions unavailable');
+    add(existsSync(gnomeAdapterPath) ? 'PASS' : 'WARN', 'GNOME Smartie adapter', existsSync(gnomeAdapterPath) ? 'installed in user extensions' : 'not installed; run npm run telemetry:adapter -- install');
   }
 
   if (process.platform === 'linux' && hasGdbus) {
@@ -119,6 +123,10 @@ function checkNativeTelemetry() {
     add(atSpi ? 'PASS' : 'WARN', 'AT-SPI semantic telemetry', atSpi ? 'accessibility bus available' : 'accessibility bus unavailable');
   } else if (process.platform === 'linux') {
     add('WARN', 'AT-SPI semantic telemetry', 'gdbus unavailable');
+  }
+
+  if (process.platform === 'linux') {
+    add(existsSync(kwinAdapterPath) ? 'PASS' : 'WARN', 'KWin adapter package', existsSync(kwinAdapterPath) ? 'bundled' : 'missing bundled KWin script');
   }
 }
 

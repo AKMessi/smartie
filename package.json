@@ -6,9 +6,10 @@
   "scripts": {
     "start": "electron --no-sandbox .",
     "smoke": "electron --no-sandbox . --smoke-test",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/native-telemetry.js && node --check scripts/doctor.mjs && node --check scripts/eval-director.mjs && node --check scripts/eval-telemetry.mjs && node scripts/smoke-check.mjs",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/native-telemetry.js && node --check src/telemetry-adapters.js && node --check scripts/doctor.mjs && node --check scripts/eval-director.mjs && node --check scripts/eval-telemetry.mjs && node --check scripts/telemetry-adapter.mjs && node scripts/smoke-check.mjs",
     "eval:director": "node scripts/eval-director.mjs",
     "eval:telemetry": "node scripts/eval-telemetry.mjs",
+    "telemetry:adapter": "node scripts/telemetry-adapter.mjs",
     "doctor": "node scripts/doctor.mjs",
     "package:linux": "electron-packager . Smartie --platform=linux --arch=x64 --out=dist --overwrite --prune=true --asar.unpack='**/node_modules/ffmpeg-static/**' --ignore='^/dist($|/)' --ignore='^/node_modules/.cache($|/)'"
   },

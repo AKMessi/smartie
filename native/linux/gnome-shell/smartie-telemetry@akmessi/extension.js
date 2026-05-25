@@ -19,6 +19,8 @@ export default class SmartieTelemetryExtension extends Extension {
     this._stream = null;
     this._pollId = 0;
     this._lastPointer = null;
+    this._nextConnectAt = 0;
+    this._connectBackoffMs = 500;
     this._connect();
     this._pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, 50, () => {
       this._publishPointer();
@@ -32,7 +34,7 @@ export default class SmartieTelemetryExtension extends Extension {
 
   disable() {
     if (this._pollId) {
-      GLib.source_remove(this._pollId);
+      GLib.Source.remove(this._pollId);
       this._pollId = 0;
     }
     if (this._focusSignal) {
@@ -43,6 +45,11 @@ export default class SmartieTelemetryExtension extends Extension {
   }
 
   _connect() {
+    const now = Date.now();
+    if (this._stream || now < this._nextConnectAt) {
+      return;
+    }
+
     try {
       const client = new Gio.SocketClient();
       const address = new Gio.UnixSocketAddress({ path: socketPath() });
@@ -50,6 +57,7 @@ export default class SmartieTelemetryExtension extends Extension {
       this._stream = new Gio.DataOutputStream({
         base_stream: this._socket.get_output_stream()
       });
+      this._connectBackoffMs = 500;
       this._send({
         type: 'adapter-ready',
         provider: 'gnome-shell',
@@ -57,6 +65,8 @@ export default class SmartieTelemetryExtension extends Extension {
       });
       this._publishFocus();
     } catch {
+      this._nextConnectAt = now + this._connectBackoffMs;
+      this._connectBackoffMs = Math.min(5000, Math.round(this._connectBackoffMs * 1.45));
       this._close();
     }
   }
@@ -91,6 +101,8 @@ export default class SmartieTelemetryExtension extends Extension {
         ...payload
       })}\n`, null);
     } catch {
+      this._nextConnectAt = Date.now() + this._connectBackoffMs;
+      this._connectBackoffMs = Math.min(5000, Math.round(this._connectBackoffMs * 1.45));
       this._close();
     }
   }

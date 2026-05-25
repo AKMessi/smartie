@@ -1,0 +1,17 @@
+{
+  "KPlugin": {
+    "Id": "smartie-telemetry",
+    "Name": "Smartie Telemetry",
+    "Description": "Publishes KWin compositor pointer and focused-window events for Smartie telemetry helpers.",
+    "Version": "1.0.0",
+    "License": "MIT",
+    "Authors": [
+      {
+        "Name": "AKMessi"
+      }
+    ]
+  },
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "contents/code/main.js",
+  "KPackageStructure": "KWin/Script"
+}

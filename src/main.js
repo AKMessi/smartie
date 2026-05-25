@@ -6,6 +6,11 @@ const path = require('node:path');
 const { promisify } = require('node:util');
 const ffmpegPath = require('ffmpeg-static');
 const { NativeTelemetryCore } = require('./native-telemetry');
+const {
+  installBestTelemetryAdapter,
+  statusTelemetryAdapters,
+  uninstallGnomeTelemetryAdapter
+} = require('./telemetry-adapters');
 
 const APP_TITLE = 'Smartie';
 const IS_SMOKE_TEST = process.argv.includes('--smoke-test');
@@ -1066,6 +1071,12 @@ ipcMain.handle('smartie:get-native-telemetry', async (_event, payload) => native
 ipcMain.handle('smartie:get-native-telemetry-diagnostics', async () => nativeTelemetry.diagnostics());
 
 ipcMain.handle('smartie:stop-native-telemetry', async () => nativeTelemetry.stopSession());
+
+ipcMain.handle('smartie:get-telemetry-adapter-status', async () => statusTelemetryAdapters());
+
+ipcMain.handle('smartie:install-telemetry-adapter', async () => installBestTelemetryAdapter({ enable: true }));
+
+ipcMain.handle('smartie:uninstall-gnome-telemetry-adapter', async () => uninstallGnomeTelemetryAdapter());
 
 ipcMain.handle('smartie:create-recording-session', async (_event, payload) => createRecordingSession(payload));
 

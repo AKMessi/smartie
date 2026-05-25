@@ -46,6 +46,9 @@ const elements = {
   performanceMode: document.querySelector('#performanceMode'),
   performanceProfile: document.querySelector('#performanceProfile'),
   recordingEngine: document.querySelector('#recordingEngine'),
+  telemetryAdapterStatus: document.querySelector('#telemetryAdapterStatus'),
+  installTelemetryAdapter: document.querySelector('#installTelemetryAdapter'),
+  refreshTelemetryAdapter: document.querySelector('#refreshTelemetryAdapter'),
   takeTitle: document.querySelector('#takeTitle'),
   titleDuration: document.querySelector('#titleDuration'),
   cueText: document.querySelector('#cueText'),
@@ -222,7 +225,8 @@ const state = {
     lastAdaptAt: 0,
     lastDropCount: 0,
     lastStatus: ''
-  }
+  },
+  telemetryAdapter: null
 };
 
 const qualityProfiles = {
@@ -1262,6 +1266,12 @@ function syncControls() {
   elements.cancelRecording.disabled = !state.recording;
   elements.refreshSources.disabled = state.recording;
   elements.chooseOutputFolder.disabled = state.recording;
+  if (elements.installTelemetryAdapter) {
+    elements.installTelemetryAdapter.disabled = state.recording || !canInstallTelemetryAdapter();
+  }
+  if (elements.refreshTelemetryAdapter) {
+    elements.refreshTelemetryAdapter.disabled = state.recording;
+  }
   elements.micMute.disabled = !elements.microphone.checked || !state.micStream;
   elements.micMute.textContent = state.micMuted ? 'Unmute' : 'Mute';
   elements.micMute.classList.toggle('active', state.micMuted);
@@ -5215,6 +5225,117 @@ async function hydratePerformanceProfile() {
   }
 }
 
+function bestTelemetryAdapter() {
+  const status = state.telemetryAdapter;
+  if (!status || !Array.isArray(status.adapters)) {
+    return null;
+  }
+
+  return status.adapters.find((adapter) => adapter.id === status.bestAdapter)
+    || status.adapters.find((adapter) => adapter.recommended)
+    || null;
+}
+
+function canInstallTelemetryAdapter() {
+  const adapter = bestTelemetryAdapter();
+  return Boolean(adapter && adapter.id === 'gnome-shell' && adapter.sourceAvailable && adapter.commandAvailable);
+}
+
+function renderTelemetryAdapterStatus() {
+  if (!elements.telemetryAdapterStatus) {
+    return;
+  }
+
+  const field = elements.telemetryAdapterStatus.closest('.telemetry-field');
+  field?.classList.remove('ready', 'warn');
+  const status = state.telemetryAdapter;
+  const adapter = bestTelemetryAdapter();
+  if (!status) {
+    elements.telemetryAdapterStatus.textContent = 'Checking...';
+    elements.installTelemetryAdapter.textContent = 'Enable';
+    return;
+  }
+
+  if (adapter?.id === 'gnome-shell' && adapter.enabled) {
+    elements.telemetryAdapterStatus.textContent = 'GNOME precision ready';
+    elements.installTelemetryAdapter.textContent = 'Reinstall';
+    field?.classList.add('ready');
+    return;
+  }
+
+  if (adapter?.id === 'gnome-shell' && adapter.pendingRestart) {
+    elements.telemetryAdapterStatus.textContent = 'GNOME pending login';
+    elements.installTelemetryAdapter.textContent = 'Reinstall';
+    field?.classList.add('warn');
+    return;
+  }
+
+  if (status.ready) {
+    elements.telemetryAdapterStatus.textContent = 'Native helper ready';
+    elements.installTelemetryAdapter.textContent = 'Enable';
+    field?.classList.add('ready');
+    return;
+  }
+
+  if (adapter?.id === 'gnome-shell') {
+    elements.telemetryAdapterStatus.textContent = adapter.installed ? 'GNOME adapter disabled' : 'GNOME adapter available';
+    elements.installTelemetryAdapter.textContent = adapter.installed ? 'Enable' : 'Install';
+    field?.classList.add('warn');
+    return;
+  }
+
+  if (adapter?.id === 'kwin') {
+    elements.telemetryAdapterStatus.textContent = 'KWin helper required';
+    elements.installTelemetryAdapter.textContent = 'Enable';
+    field?.classList.add('warn');
+    return;
+  }
+
+  elements.telemetryAdapterStatus.textContent = 'Fallback telemetry';
+  elements.installTelemetryAdapter.textContent = 'Enable';
+  field?.classList.add('warn');
+}
+
+async function refreshTelemetryAdapterStatus() {
+  if (typeof window.smartie.getTelemetryAdapterStatus !== 'function') {
+    return;
+  }
+
+  try {
+    state.telemetryAdapter = await window.smartie.getTelemetryAdapterStatus();
+    renderTelemetryAdapterStatus();
+    syncControls();
+  } catch (error) {
+    console.warn('Could not inspect Smartie telemetry adapter.', error);
+    state.telemetryAdapter = null;
+    if (elements.telemetryAdapterStatus) {
+      elements.telemetryAdapterStatus.textContent = 'Telemetry check failed';
+    }
+    syncControls();
+  }
+}
+
+async function installTelemetryAdapter() {
+  if (typeof window.smartie.installTelemetryAdapter !== 'function') {
+    return;
+  }
+
+  try {
+    elements.installTelemetryAdapter.disabled = true;
+    elements.telemetryAdapterStatus.textContent = 'Installing...';
+    const result = await window.smartie.installTelemetryAdapter();
+    state.telemetryAdapter = result.status || await window.smartie.getTelemetryAdapterStatus();
+    renderTelemetryAdapterStatus();
+    setStatus(result.warning ? 'Telemetry adapter installed; enable warning recorded' : 'Telemetry adapter enabled');
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || 'Telemetry adapter install failed');
+    await refreshTelemetryAdapterStatus();
+  } finally {
+    syncControls();
+  }
+}
+
 function cleanupRecording({ keepSession = false } = {}) {
   const sessionToDiscard = keepSession ? null : state.recordingSessionId;
   state.drawing = false;
@@ -5560,6 +5681,8 @@ elements.cancelRecording.addEventListener('click', cancelRecording);
 elements.revealRecording.addEventListener('click', () => window.smartie.revealFile(state.lastRecordingPath));
 elements.revealProject.addEventListener('click', () => window.smartie.revealFile(state.lastSmartProjectPath));
 elements.chooseOutputFolder.addEventListener('click', chooseOutputFolder);
+elements.installTelemetryAdapter.addEventListener('click', installTelemetryAdapter);
+elements.refreshTelemetryAdapter.addEventListener('click', refreshTelemetryAdapterStatus);
 elements.clearRecent.addEventListener('click', clearRecentRecordings);
 elements.micMute.addEventListener('click', toggleMicMute);
 elements.micDevice.addEventListener('change', () => {
@@ -5671,6 +5794,9 @@ hydrateOutputFolder().catch((error) => {
 });
 hydratePerformanceProfile().catch((error) => {
   console.warn('Could not load Smartie performance profile.', error);
+});
+refreshTelemetryAdapterStatus().catch((error) => {
+  console.warn('Could not inspect Smartie telemetry adapter.', error);
 });
 refreshMediaDevices({ quiet: true }).catch((error) => {
   console.warn('Could not enumerate media devices.', error);
