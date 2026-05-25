@@ -2929,21 +2929,25 @@ function drawTimelinePulses(settings, atMs, pulses) {
 
   for (const pulse of pulses) {
     const elapsed = atMs - pulse.atMs;
-    if (elapsed < 0 || elapsed > 620) {
+    const nativePulse = pulse.source === 'native-click' || pulse.source === 'native_click_telemetry';
+    const lifetimeMs = nativePulse ? 760 : 620;
+    if (elapsed < 0 || elapsed > lifetimeMs) {
       continue;
     }
 
-    const progress = elapsed / 620;
+    const progress = elapsed / lifetimeMs;
     const point = vectorLayerPoint(pulse.x, pulse.y);
     if (!point.visible) {
       continue;
     }
     const { x, y } = point;
-    const radius = canvas.width * (0.02 + progress * 0.05);
+    const radius = canvas.width * ((nativePulse ? 0.018 : 0.02) + progress * (nativePulse ? 0.064 : 0.05));
 
     ctx.save();
-    ctx.strokeStyle = `rgba(255, 191, 90, ${1 - progress})`;
-    ctx.lineWidth = Math.max(5, canvas.width * 0.003);
+    ctx.strokeStyle = nativePulse
+      ? `rgba(66, 214, 198, ${(1 - progress) * 0.96})`
+      : `rgba(255, 191, 90, ${1 - progress})`;
+    ctx.lineWidth = Math.max(nativePulse ? 4 : 5, canvas.width * (nativePulse ? 0.0025 : 0.003));
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.stroke();
@@ -3447,6 +3451,274 @@ function refineSmartTimeline(timeline) {
   return refined;
 }
 
+function timedPointSourceRank(source) {
+  return {
+    'native-click': 6,
+    'native-pointer': 5,
+    'click-telemetry': 5,
+    'cursor-telemetry': 4,
+    'render-trail': 3,
+    'timeline-pointer': 2,
+    'sampled-pointer': 1
+  }[source] || 0;
+}
+
+function pushTimedPoint(points, point) {
+  const atMs = finiteNumber(point?.atMs, finiteNumber(point?.time_ms, finiteNumber(point?.time, 0) * 1000));
+  const x = finiteNumber(point?.x, NaN);
+  const y = finiteNumber(point?.y, NaN);
+  if (!Number.isFinite(atMs) || !Number.isFinite(x) || !Number.isFinite(y)) {
+    return;
+  }
+
+  points.push({
+    atMs: Math.round(atMs),
+    x: roundTo(clamp01(x), 5),
+    y: roundTo(clamp01(y), 5),
+    source: point.source || 'timeline-pointer',
+    velocity: Number.isFinite(finiteNumber(point.velocity, NaN)) ? finiteNumber(point.velocity, 0) : null
+  });
+}
+
+function dedupeTimedPoints(points) {
+  const deduped = [];
+  for (const point of points.sort((a, b) => a.atMs - b.atMs || timedPointSourceRank(b.source) - timedPointSourceRank(a.source))) {
+    const previous = deduped[deduped.length - 1];
+    if (
+      previous
+      && Math.abs(point.atMs - previous.atMs) <= 42
+      && Math.hypot(point.x - previous.x, point.y - previous.y) <= 0.012
+    ) {
+      if (timedPointSourceRank(point.source) > timedPointSourceRank(previous.source)) {
+        deduped[deduped.length - 1] = point;
+      }
+      continue;
+    }
+
+    deduped.push(point);
+  }
+
+  return deduped;
+}
+
+function smoothRenderCursorTrack(points) {
+  const deduped = dedupeTimedPoints(points);
+  if (deduped.length < 3) {
+    return deduped;
+  }
+
+  const smoothed = [deduped[0]];
+  for (let index = 1; index < deduped.length; index += 1) {
+    const previous = smoothed[smoothed.length - 1];
+    const current = deduped[index];
+    const gapMs = current.atMs - previous.atMs;
+    if (current.source === 'native-click' || gapMs > 420) {
+      smoothed.push(current);
+      continue;
+    }
+
+    const amount = current.source === 'native-pointer' ? 0.78 : 0.62;
+    smoothed.push({
+      ...current,
+      x: roundTo(lerp(previous.x, current.x, amount), 5),
+      y: roundTo(lerp(previous.y, current.y, amount), 5)
+    });
+  }
+
+  return smoothed;
+}
+
+function buildRenderCursorTrack(timelinePlan) {
+  const telemetry = timelinePlan.telemetry || {};
+  const points = [];
+
+  for (const point of Array.isArray(timelinePlan.trail) ? timelinePlan.trail : []) {
+    pushTimedPoint(points, {
+      atMs: point.atMs,
+      x: point.x,
+      y: point.y,
+      source: 'render-trail'
+    });
+  }
+
+  for (const sample of Array.isArray(telemetry.cursor) ? telemetry.cursor : []) {
+    pushTimedPoint(points, {
+      atMs: sample.time_ms,
+      x: sample.x,
+      y: sample.y,
+      source: 'cursor-telemetry',
+      velocity: sample.velocity
+    });
+  }
+
+  for (const event of Array.isArray(telemetry.native) ? telemetry.native : []) {
+    const point = nativePointerFromTelemetryEvent(event);
+    if (point) {
+      pushTimedPoint(points, {
+        atMs: point.time_ms,
+        x: point.x,
+        y: point.y,
+        source: point.source
+      });
+    }
+  }
+
+  for (const sample of Array.isArray(timelinePlan.timeline) ? timelinePlan.timeline : []) {
+    pushTimedPoint(points, {
+      atMs: sample.atMs,
+      x: sample.pointer?.x,
+      y: sample.pointer?.y,
+      source: 'timeline-pointer'
+    });
+  }
+
+  return smoothRenderCursorTrack(points);
+}
+
+function timelinePointAtTrack(track, atMs, maxGapMs = 1100) {
+  if (!Array.isArray(track) || track.length === 0) {
+    return null;
+  }
+
+  let low = 0;
+  let high = track.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (track[middle].atMs <= atMs) {
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  const before = track[Math.max(0, high)];
+  const after = track[Math.min(track.length - 1, low)];
+  if (!before || before === after) {
+    const point = before || after;
+    return Math.abs(point.atMs - atMs) <= maxGapMs ? point : null;
+  }
+
+  const gapMs = after.atMs - before.atMs;
+  if (gapMs > maxGapMs) {
+    const nearest = Math.abs(before.atMs - atMs) <= Math.abs(after.atMs - atMs) ? before : after;
+    return Math.abs(nearest.atMs - atMs) <= maxGapMs ? nearest : null;
+  }
+
+  const amount = smoothstep((atMs - before.atMs) / Math.max(1, gapMs));
+  return {
+    atMs,
+    x: roundTo(lerp(before.x, after.x, amount), 5),
+    y: roundTo(lerp(before.y, after.y, amount), 5),
+    source: timedPointSourceRank(after.source) >= timedPointSourceRank(before.source) ? after.source : before.source
+  };
+}
+
+function buildRenderPulses(timelinePlan) {
+  const pulses = [];
+  const addPulse = (pulse) => {
+    const atMs = finiteNumber(pulse?.atMs, finiteNumber(pulse?.time_ms, finiteNumber(pulse?.time, 0) * 1000));
+    const x = finiteNumber(pulse?.x, NaN);
+    const y = finiteNumber(pulse?.y, NaN);
+    if (!Number.isFinite(atMs) || !Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+
+    const next = {
+      atMs: Math.round(atMs),
+      x: roundTo(clamp01(x), 5),
+      y: roundTo(clamp01(y), 5),
+      source: pulse.source || pulse.type || 'click-pulse'
+    };
+    const duplicateIndex = pulses.findIndex((existing) => (
+      Math.abs(existing.atMs - next.atMs) <= 180
+      && Math.hypot(existing.x - next.x, existing.y - next.y) <= 0.035
+    ));
+    if (duplicateIndex >= 0) {
+      if (timedPointSourceRank(next.source) > timedPointSourceRank(pulses[duplicateIndex].source)) {
+        pulses[duplicateIndex] = next;
+      }
+      return;
+    }
+
+    pulses.push(next);
+  };
+
+  for (const pulse of Array.isArray(timelinePlan.pulses) ? timelinePlan.pulses : []) {
+    addPulse(pulse);
+  }
+
+  const telemetry = timelinePlan.telemetry || {};
+  for (const click of Array.isArray(telemetry.clicks) ? telemetry.clicks : []) {
+    addPulse({
+      atMs: click.time_ms,
+      x: click.x,
+      y: click.y,
+      source: click.type === 'native-click' ? 'native-click' : 'click-telemetry'
+    });
+  }
+
+  return pulses.sort((a, b) => a.atMs - b.atMs);
+}
+
+function buildRenderKeyboardTimeline(timelinePlan) {
+  const telemetry = timelinePlan.telemetry || {};
+  const events = [];
+  for (const event of Array.isArray(telemetry.keyboard) ? telemetry.keyboard : []) {
+    const atMs = finiteNumber(event.time_ms, finiteNumber(event.time, 0) * 1000);
+    const keys = Array.isArray(event.keys) && event.keys.length > 0
+      ? event.keys.slice(-4)
+      : event.key ? [event.key] : [];
+    if (!Number.isFinite(atMs) || keys.length === 0) {
+      continue;
+    }
+
+    const previous = events[events.length - 1];
+    if (previous && atMs - previous.atMs < 90 && previous.keys.join('+') === keys.join('+')) {
+      previous.atMs = Math.round(atMs);
+      continue;
+    }
+
+    events.push({
+      atMs: Math.round(atMs),
+      keys
+    });
+  }
+
+  return events;
+}
+
+function timelineKeysAt(events, atMs) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return null;
+  }
+
+  let current = null;
+  for (const event of events) {
+    if (event.atMs > atMs) {
+      break;
+    }
+    current = event;
+  }
+
+  if (!current || atMs - current.atMs > 1400) {
+    return null;
+  }
+
+  return current.keys.slice();
+}
+
+function enhanceTimelinePlanEffects(timelinePlan) {
+  const cursorTrack = buildRenderCursorTrack(timelinePlan);
+  const nativeStats = nativeTelemetryStats(timelinePlan.telemetry?.native || []);
+  timelinePlan.renderCursorTrack = cursorTrack;
+  timelinePlan.renderPulses = buildRenderPulses(timelinePlan);
+  timelinePlan.renderKeyboard = buildRenderKeyboardTimeline(timelinePlan);
+  timelinePlan.cursorLayerUsable = cursorTrack.length > 1
+    || timelinePlan.telemetryQuality?.cursor?.usable !== false
+    || finiteNumber(nativeStats.bestScore, 0) >= 0.72;
+  return timelinePlan;
+}
+
 function roundTo(value, digits = 3) {
   const factor = 10 ** digits;
   return Math.round(finiteNumber(value, 0) * factor) / factor;
@@ -3651,20 +3923,243 @@ function fallbackAttentionScale(settings, confidence, maxScale = null) {
   return roundTo(clamp(1 + (requested - 1) * (0.42 + confidence * 0.38), 1.08, ceiling), 4);
 }
 
-function pushFallbackAttentionEvent(events, event, stats) {
-  const before = events.length;
-  pushAttentionEvent(events, event);
-  if (events.length > before) {
-    stats.fallbackEvents += 1;
-    stats.sources[event.source || event.type || 'fallback'] = (stats.sources[event.source || event.type || 'fallback'] || 0) + 1;
-  }
+function attentionEventDistance(a, b) {
+  return Math.hypot(
+    finiteNumber(a?.x, 0.5) - finiteNumber(b?.x, 0.5),
+    finiteNumber(a?.y, 0.5) - finiteNumber(b?.y, 0.5)
+  );
 }
 
-function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
+function attentionEventCovered(events, event, minGapMs = 420, minDistance = 0.04) {
+  const atMs = finiteNumber(event.time_ms, finiteNumber(event.time, 0) * 1000);
+  return events.some((existing) => {
+    const existingAtMs = finiteNumber(existing.time_ms, finiteNumber(existing.time, 0) * 1000);
+    if (Math.abs(existingAtMs - atMs) > minGapMs) {
+      return false;
+    }
+
+    const sameCue = existing.type === event.type
+      || event.type === 'attention'
+      || existing.type === 'attention'
+      || event.type === 'focus'
+      || existing.type === 'focus';
+    return sameCue && attentionEventDistance(existing, event) < minDistance;
+  });
+}
+
+function pushTelemetryAttentionEvent(events, event, stats, options = {}) {
+  const source = event.source || event.type || 'telemetry';
+  const force = Boolean(options.force);
+  const minGapMs = finiteNumber(options.minGapMs, 420);
+  const minDistance = finiteNumber(options.minDistance, 0.04);
+  if (!force && attentionEventCovered(events, event, minGapMs, minDistance)) {
+    return false;
+  }
+
+  const before = events.length;
+  pushAttentionEvent(events, event);
+  if (events.length <= before) {
+    return false;
+  }
+
+  stats.telemetryEvents += 1;
+  if (options.fallback) {
+    stats.fallbackEvents += 1;
+  }
+  stats.sources[source] = (stats.sources[source] || 0) + 1;
+  return true;
+}
+
+function nativePointerFromTelemetryEvent(event) {
+  const pointer = event?.pointer || {};
+  const x = finiteNumber(pointer.x, NaN);
+  const y = finiteNumber(pointer.y, NaN);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return null;
+  }
+
+  return {
+    time_ms: Math.round(finiteNumber(event.time_ms, finiteNumber(event.time, 0) * 1000)),
+    x: roundTo(clamp01(x), 5),
+    y: roundTo(clamp01(y), 5),
+    source: event.type === 'click' ? 'native-click' : 'native-pointer',
+    score: finiteNumber(event.quality?.score, 0.72),
+    precision: event.pointer?.precision || event.precision || null
+  };
+}
+
+function nearestTelemetryPointAt(timelinePlan, atMs, maxDistanceMs = 1100) {
+  const telemetry = timelinePlan.telemetry || {};
+  let best = null;
+  const consider = (point, sourceWeight = 0) => {
+    if (!point) {
+      return;
+    }
+
+    const pointAtMs = finiteNumber(point.time_ms, finiteNumber(point.atMs, finiteNumber(point.time, 0) * 1000));
+    const distanceMs = Math.abs(pointAtMs - atMs);
+    if (distanceMs > maxDistanceMs) {
+      return;
+    }
+
+    const x = finiteNumber(point.x, NaN);
+    const y = finiteNumber(point.y, NaN);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+
+    const rank = distanceMs - sourceWeight;
+    if (!best || rank < best.rank) {
+      best = {
+        time_ms: Math.round(pointAtMs),
+        x: roundTo(clamp01(x), 5),
+        y: roundTo(clamp01(y), 5),
+        source: point.source || 'telemetry-point',
+        rank
+      };
+    }
+  };
+
+  for (const event of Array.isArray(telemetry.native) ? telemetry.native : []) {
+    const point = nativePointerFromTelemetryEvent(event);
+    if (point) {
+      consider(point, point.source === 'native-click' ? 260 : 160);
+    }
+  }
+
+  for (const sample of Array.isArray(telemetry.cursor) ? telemetry.cursor : []) {
+    consider({
+      time_ms: sample.time_ms,
+      x: sample.x,
+      y: sample.y,
+      source: 'cursor-telemetry'
+    }, 80);
+  }
+
+  for (const point of Array.isArray(timelinePlan.trail) ? timelinePlan.trail : []) {
+    consider({
+      time_ms: point.atMs,
+      x: point.x,
+      y: point.y,
+      source: 'render-trail'
+    }, 40);
+  }
+
+  if (!best && Array.isArray(timelinePlan.timeline) && timelinePlan.timeline.length > 0) {
+    const sample = timelineSampleAt(timelinePlan.timeline, atMs);
+    if (sample?.pointer) {
+      consider({
+        time_ms: atMs,
+        x: sample.pointer.x,
+        y: sample.pointer.y,
+        source: 'sampled-pointer'
+      }, 0);
+    }
+  }
+
+  return best;
+}
+
+function normalizedPointFromScreenBounds(bounds) {
+  if (!bounds || typeof bounds !== 'object') {
+    return null;
+  }
+
+  const left = finiteNumber(bounds.x, finiteNumber(bounds.left, NaN));
+  const top = finiteNumber(bounds.y, finiteNumber(bounds.top, NaN));
+  const width = finiteNumber(bounds.width, Number.isFinite(finiteNumber(bounds.right, NaN)) ? finiteNumber(bounds.right, 0) - left : NaN);
+  const height = finiteNumber(bounds.height, Number.isFinite(finiteNumber(bounds.bottom, NaN)) ? finiteNumber(bounds.bottom, 0) - top : NaN);
+  if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const display = selectedDisplay();
+  if (!display?.bounds?.width || !display?.bounds?.height) {
+    return null;
+  }
+
+  return {
+    x: roundTo(clamp01((left + width / 2 - display.bounds.x) / display.bounds.width), 5),
+    y: roundTo(clamp01((top + height / 2 - display.bounds.y) / display.bounds.height), 5)
+  };
+}
+
+function cursorDwellAttentionEvents(samples = [], durationMs = 0, settings = getSettings(), outputSize = canvasSizeForSettings(settings)) {
+  const sorted = samples
+    .filter((sample) => Number.isFinite(finiteNumber(sample.time_ms, NaN)))
+    .sort((a, b) => finiteNumber(a.time_ms, 0) - finiteNumber(b.time_ms, 0));
+  const events = [];
+  let runStart = null;
+  let runEnd = null;
+  let anchor = null;
+  let lastEmittedAt = -Infinity;
+
+  const finishRun = () => {
+    if (!runStart || !runEnd || !anchor) {
+      return;
+    }
+
+    const runMs = finiteNumber(runEnd.time_ms, 0) - finiteNumber(runStart.time_ms, 0);
+    const eventAtMs = finiteNumber(runStart.time_ms, 0) + Math.min(720, runMs * 0.5);
+    if (runMs < 920 || eventAtMs - lastEmittedAt < 2400) {
+      return;
+    }
+
+    const confidence = clamp(0.72 + runMs / 5200, 0.72, 0.92);
+    events.push({
+      time: roundTo(eventAtMs / 1000, 3),
+      time_ms: Math.round(eventAtMs),
+      x: roundTo(clamp01(anchor.x), 5),
+      y: roundTo(clamp01(anchor.y), 5),
+      type: 'dwell',
+      confidence,
+      duration_ms: clamp(runMs + 360, 1180, 2300),
+      scale: fallbackAttentionScale(settings, confidence, Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.72)),
+      reason: 'cursor dwell telemetry',
+      source: 'cursor_dwell_telemetry',
+      output_width: outputSize.width,
+      output_height: outputSize.height
+    });
+    lastEmittedAt = eventAtMs;
+  };
+
+  for (const sample of sorted) {
+    const x = finiteNumber(sample.x, NaN);
+    const y = finiteNumber(sample.y, NaN);
+    const velocity = Math.abs(finiteNumber(sample.velocity, 0));
+    if (!Number.isFinite(x) || !Number.isFinite(y) || velocity > 0.0048) {
+      finishRun();
+      runStart = null;
+      runEnd = null;
+      anchor = null;
+      continue;
+    }
+
+    if (!anchor || Math.hypot(anchor.x - x, anchor.y - y) > 0.032) {
+      finishRun();
+      runStart = sample;
+      runEnd = sample;
+      anchor = { x, y };
+      continue;
+    }
+
+    runEnd = sample;
+    anchor = {
+      x: anchor.x * 0.86 + x * 0.14,
+      y: anchor.y * 0.86 + y * 0.14
+    };
+  }
+
+  finishRun();
+  return events.filter((event) => event.time_ms <= durationMs + 50);
+}
+
+function appendTelemetryAttentionEvents(events, timelinePlan, outputSize) {
   const settings = timelinePlan.settings;
   const durationMs = Math.max(0, finiteNumber(timelinePlan.durationMs, 0));
   const telemetry = timelinePlan.telemetry || {};
   const stats = {
+    telemetryEvents: 0,
     fallbackEvents: 0,
     strategy: 'none',
     sources: {},
@@ -3676,43 +4171,63 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
   }
 
   const existingStrongEvents = events.filter((event) => event.type !== 'wide').length;
-  if (existingStrongEvents >= 1) {
-    stats.strategy = 'primary-attention';
-    return stats;
-  }
-
   const clickEvents = Array.isArray(telemetry.clicks) ? telemetry.clicks : [];
-  for (const click of clickEvents.slice(0, 16)) {
+  for (const click of clickEvents.slice(0, 36)) {
     const atMs = finiteNumber(click.time_ms, finiteNumber(click.time, 0) * 1000);
     const confidence = clamp01(finiteNumber(click.confidence, 0.92));
-    pushFallbackAttentionEvent(events, {
+    pushTelemetryAttentionEvent(events, {
       time: roundTo(atMs / 1000, 3),
       time_ms: Math.round(atMs),
       x: roundTo(clamp01(finiteNumber(click.x, 0.5)), 5),
       y: roundTo(clamp01(finiteNumber(click.y, 0.5)), 5),
       type: 'click',
-      confidence,
-      duration_ms: 620,
-      scale: fallbackAttentionScale(settings, confidence),
+      confidence: click.type === 'native-click' || click.source ? Math.max(confidence, 0.96) : confidence,
+      duration_ms: click.type === 'native-click' ? 760 : 620,
+      scale: fallbackAttentionScale(settings, confidence, click.type === 'native-click' ? null : Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.74)),
       reason: click.reason || click.type || 'click telemetry',
-      source: 'click_telemetry',
+      source: click.type === 'native-click' ? 'native_click_telemetry' : 'click_telemetry',
       output_width: outputSize.width,
       output_height: outputSize.height
-    }, stats);
+    }, stats, { minGapMs: 180, minDistance: 0.03 });
+  }
+
+  const keyboardEvents = spacedTelemetryEvents(
+    Array.isArray(telemetry.keyboard) ? telemetry.keyboard : [],
+    720,
+    (event) => Array.isArray(event.keys) ? event.keys.length : 1
+  ).slice(0, Math.max(8, Math.round(durationMs / 4500)));
+  for (const event of keyboardEvents) {
+    const atMs = finiteNumber(event.time_ms, finiteNumber(event.time, 0) * 1000);
+    const point = nearestTelemetryPointAt(timelinePlan, atMs, 1500) || { x: 0.5, y: 0.58 };
+    const confidence = clamp(0.76 + Math.min(0.12, (Array.isArray(event.keys) ? event.keys.length : 1) * 0.03), 0.76, 0.9);
+    pushTelemetryAttentionEvent(events, {
+      time: roundTo(atMs / 1000, 3),
+      time_ms: Math.round(atMs),
+      x: point.x,
+      y: point.y,
+      type: 'keyboard',
+      confidence,
+      duration_ms: 1280,
+      scale: fallbackAttentionScale(settings, confidence, Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.68)),
+      reason: 'keyboard telemetry',
+      source: 'keyboard_telemetry',
+      output_width: outputSize.width,
+      output_height: outputSize.height
+    }, stats, { minGapMs: 900, minDistance: 0.08 });
   }
 
   const nativePrecisionEvents = spacedTelemetryEvents(
     (Array.isArray(telemetry.native) ? telemetry.native : [])
       .filter((event) => (event.type === 'snapshot' || event.type === 'pointer' || event.type === 'cursor') && event.pointer && Number.isFinite(finiteNumber(event.pointer.x, NaN)))
       .filter((event) => finiteNumber(event.quality?.score, 0) >= 0.72),
-    1250,
+    1500,
     (event) => finiteNumber(event.quality?.score, 0)
-  ).slice(0, Math.max(4, Math.round(durationMs / 11000)));
+  ).slice(0, Math.max(4, Math.round(durationMs / (existingStrongEvents > 0 ? 14000 : 9500))));
 
   for (const nativeEvent of nativePrecisionEvents) {
     const atMs = finiteNumber(nativeEvent.time_ms, finiteNumber(nativeEvent.time, 0) * 1000);
     const confidence = clamp01(0.74 + finiteNumber(nativeEvent.quality?.score, 0.72) * 0.18);
-    pushFallbackAttentionEvent(events, {
+    pushTelemetryAttentionEvent(events, {
       time: roundTo(atMs / 1000, 3),
       time_ms: Math.round(atMs),
       x: roundTo(clamp01(finiteNumber(nativeEvent.pointer.x, 0.5)), 5),
@@ -3725,7 +4240,14 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
       source: 'native_pointer_telemetry',
       output_width: outputSize.width,
       output_height: outputSize.height
-    }, stats);
+    }, stats, { minGapMs: existingStrongEvents > 0 ? 1500 : 1050, minDistance: 0.08 });
+  }
+
+  if (stats.cursor.usable) {
+    for (const dwell of cursorDwellAttentionEvents(telemetry.cursor, durationMs, settings, outputSize)
+      .slice(0, Math.max(4, Math.round(durationMs / 8000)))) {
+      pushTelemetryAttentionEvent(events, dwell, stats, { minGapMs: 1800, minDistance: 0.06 });
+    }
   }
 
   const motionEvents = spacedTelemetryEvents(Array.isArray(telemetry.motion) ? telemetry.motion : [], 1100, (event) => finiteNumber(event.strength, 0))
@@ -3734,7 +4256,7 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
     const atMs = finiteNumber(motion.time_ms, finiteNumber(motion.time, 0) * 1000);
     const strength = clamp01(finiteNumber(motion.strength, 0.2));
     const confidence = clamp01(0.72 + strength * 0.22);
-    pushFallbackAttentionEvent(events, {
+    pushTelemetryAttentionEvent(events, {
       time: roundTo(atMs / 1000, 3),
       time_ms: Math.round(atMs),
       x: roundTo(clamp01(finiteNumber(motion.x, 0.5)), 5),
@@ -3747,21 +4269,49 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
       source: 'visual_motion_fallback',
       output_width: outputSize.width,
       output_height: outputSize.height
-    }, stats);
+    }, stats, { minGapMs: 1300, minDistance: 0.1 });
+  }
+
+  const accessibilityEvents = spacedTelemetryEvents(
+    (Array.isArray(telemetry.accessibility) ? telemetry.accessibility : [])
+      .filter((event) => event.available !== false),
+    4200,
+    (event) => normalizedPointFromScreenBounds(event.bounds) ? 0.86 : 0.62
+  ).slice(0, Math.max(3, Math.round(durationMs / 13000)));
+  for (const event of accessibilityEvents) {
+    const atMs = finiteNumber(event.time_ms, finiteNumber(event.time, 0) * 1000);
+    const point = normalizedPointFromScreenBounds(event.bounds)
+      || nearestTelemetryPointAt(timelinePlan, atMs, 1600)
+      || { x: 0.5, y: 0.48 };
+    const confidence = normalizedPointFromScreenBounds(event.bounds) ? 0.78 : 0.68;
+    pushTelemetryAttentionEvent(events, {
+      time: roundTo(atMs / 1000, 3),
+      time_ms: Math.round(atMs),
+      x: point.x,
+      y: point.y,
+      type: 'focus',
+      confidence,
+      duration_ms: 1400,
+      scale: fallbackAttentionScale(settings, confidence, Math.min(finiteNumber(settings.zoomStrength, 1.7), 1.58)),
+      reason: event.title ? `active window: ${cleanTitle(event.title)}` : 'active window telemetry',
+      source: 'semantic_window_telemetry',
+      output_width: outputSize.width,
+      output_height: outputSize.height
+    }, stats, { minGapMs: 3600, minDistance: 0.12 });
   }
 
   if (stats.cursor.usable) {
     const cursorEvents = spacedTelemetryEvents(
       (telemetry.cursor || []).filter((sample) => finiteNumber(sample.velocity, 0) >= 0.003),
-      1400,
+      1500,
       (sample) => finiteNumber(sample.velocity, 0)
-    ).slice(0, Math.max(4, Math.round(durationMs / 11000)));
+    ).slice(0, Math.max(4, Math.round(durationMs / (existingStrongEvents > 0 ? 15000 : 11000))));
 
     for (const cursor of cursorEvents) {
       const atMs = finiteNumber(cursor.time_ms, finiteNumber(cursor.time, 0) * 1000);
       const velocity = clamp01(finiteNumber(cursor.velocity, 0) / 0.05);
-      const confidence = clamp01(0.72 + velocity * 0.2);
-      pushFallbackAttentionEvent(events, {
+      const confidence = clamp01(0.7 + velocity * 0.18);
+      pushTelemetryAttentionEvent(events, {
         time: roundTo(atMs / 1000, 3),
         time_ms: Math.round(atMs),
         x: roundTo(clamp01(finiteNumber(cursor.x, 0.5)), 5),
@@ -3770,17 +4320,17 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
         confidence,
         duration_ms: 900,
         scale: fallbackAttentionScale(settings, confidence),
-        reason: 'cursor telemetry fallback',
+        reason: 'cursor telemetry',
         source: 'cursor_telemetry',
         output_width: outputSize.width,
         output_height: outputSize.height
-      }, stats);
+      }, stats, { minGapMs: 1500, minDistance: 0.08 });
     }
   }
 
-  const enoughFallback = stats.fallbackEvents >= Math.max(1, Math.min(3, Math.round(durationMs / 16000)));
+  const enoughFallback = existingStrongEvents + stats.telemetryEvents >= Math.max(1, Math.min(3, Math.round(durationMs / 16000)));
   if (!enoughFallback && durationMs >= 8000) {
-    const needed = Math.max(1, Math.min(4, Math.round(durationMs / 12000))) - stats.fallbackEvents;
+    const needed = Math.max(1, Math.min(4, Math.round(durationMs / 12000))) - existingStrongEvents - stats.telemetryEvents;
     const anchors = [
       { x: 0.42, y: 0.5 },
       { x: 0.58, y: 0.5 },
@@ -3794,7 +4344,7 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
     for (let index = 0; index < needed; index += 1) {
       const atMs = clamp(startMs + spacingMs * index, 900, Math.max(900, durationMs - 1200));
       const anchor = anchors[index % anchors.length];
-      pushFallbackAttentionEvent(events, {
+      pushTelemetryAttentionEvent(events, {
         time: roundTo(atMs / 1000, 3),
         time_ms: Math.round(atMs),
         x: anchor.x,
@@ -3809,20 +4359,28 @@ function appendTelemetryFallbackAttention(events, timelinePlan, outputSize) {
         source: 'director_failsafe',
         output_width: outputSize.width,
         output_height: outputSize.height
-      }, stats);
+      }, stats, { force: true, fallback: true });
     }
   }
 
-  if (stats.sources.click_telemetry) {
+  if (stats.fallbackEvents > 0) {
+    stats.strategy = 'director-failsafe';
+  } else if (stats.telemetryEvents > 0 && existingStrongEvents > 0) {
+    stats.strategy = 'semantic-fusion';
+  } else if (stats.sources.native_click_telemetry || stats.sources.click_telemetry) {
     stats.strategy = 'click-telemetry';
   } else if (stats.sources.native_pointer_telemetry) {
     stats.strategy = 'native-pointer';
+  } else if (stats.sources.keyboard_telemetry) {
+    stats.strategy = 'keyboard-telemetry';
+  } else if (stats.sources.semantic_window_telemetry) {
+    stats.strategy = 'semantic-window';
   } else if (stats.sources.visual_motion_fallback) {
     stats.strategy = 'visual-motion';
   } else if (stats.sources.cursor_telemetry) {
     stats.strategy = 'cursor-telemetry';
-  } else if (stats.sources.director_failsafe) {
-    stats.strategy = 'director-failsafe';
+  } else if (existingStrongEvents > 0) {
+    stats.strategy = 'primary-attention';
   }
 
   return stats;
@@ -3875,7 +4433,7 @@ function buildAttentionTimeline(timelinePlan, outputSize) {
   }
 
   const primaryEventCount = events.length;
-  const fallbackStats = appendTelemetryFallbackAttention(events, timelinePlan, outputSize);
+  const telemetryStats = appendTelemetryAttentionEvents(events, timelinePlan, outputSize);
   events.sort((a, b) => a.time_ms - b.time_ms || b.confidence - a.confidence);
 
   return {
@@ -3885,10 +4443,13 @@ function buildAttentionTimeline(timelinePlan, outputSize) {
     stats: {
       count: events.length,
       primary_events: primaryEventCount,
-      fallback_events: fallbackStats.fallbackEvents,
-      fallback_strategy: fallbackStats.strategy,
-      fallback_sources: fallbackStats.sources,
-      cursor_quality: fallbackStats.cursor
+      telemetry_events: telemetryStats.telemetryEvents,
+      telemetry_strategy: telemetryStats.strategy,
+      telemetry_sources: telemetryStats.sources,
+      fallback_events: telemetryStats.fallbackEvents,
+      fallback_strategy: telemetryStats.fallbackEvents > 0 ? telemetryStats.strategy : 'none',
+      fallback_sources: telemetryStats.sources,
+      cursor_quality: telemetryStats.cursor
     },
     source: {
       duration_ms: Math.round(finiteNumber(timelinePlan.durationMs, 0)),
@@ -3961,6 +4522,21 @@ function cueScore(cue) {
   }[cue] || 0.62;
 }
 
+function eventSourceScore(source) {
+  return {
+    native_click_telemetry: 1,
+    'native-click': 1,
+    click_telemetry: 0.94,
+    keyboard_telemetry: 0.9,
+    semantic_window_telemetry: 0.84,
+    cursor_dwell_telemetry: 0.84,
+    native_pointer_telemetry: 0.78,
+    cursor_telemetry: 0.7,
+    visual_motion_fallback: 0.58,
+    director_failsafe: 0.52
+  }[source] || 0.66;
+}
+
 function cueRank(cue) {
   return {
     click: 6,
@@ -3975,11 +4551,11 @@ function cueRank(cue) {
 
 function cameraShotDurationMs(cue, score, profile, eventDurationMs = 0) {
   const base = {
-    click: 980,
-    keyboard: 1180,
-    dwell: 1660,
+    click: 1120,
+    keyboard: 1360,
+    dwell: 1780,
     attention: 1180,
-    focus: 1280,
+    focus: 1480,
     motion: 880
   }[cue] || 1040;
   const eventHold = Math.max(0, finiteNumber(eventDurationMs, 0));
@@ -4004,7 +4580,7 @@ function cameraTargetScale(event, score, settings, profile) {
   const liveScale = Math.max(1, finiteNumber(event.scale, 1));
   const cue = String(event.type || event.cue || 'attention').replace(/[-\s]+/g, '_');
   const cueScale = {
-    click: 0.94,
+    click: event.source === 'native_click_telemetry' || event.source === 'native-click' ? 0.99 : 0.94,
     keyboard: 0.92,
     dwell: 0.9,
     attention: 0.9,
@@ -4032,7 +4608,8 @@ function directorCandidateFromEvent(event, settings, profile, durationMs) {
   }
 
   const confidence = clamp01(finiteNumber(event.confidence, 0.5));
-  const score = roundTo(confidence * 0.72 + cueScore(cue) * 0.28, 3);
+  const sourceScore = eventSourceScore(event.source || cue);
+  const score = roundTo(confidence * 0.58 + cueScore(cue) * 0.27 + sourceScore * 0.15, 3);
   if (score < profile.threshold) {
     return null;
   }
@@ -4338,6 +4915,7 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
   const zoomCoverage = finiteNumber(cameraPlan.stats.zoomCoverage, 0);
   const fallbackStats = attentionTimeline.stats || {};
   const fallbackEvents = finiteNumber(fallbackStats.fallback_events, 0);
+  const telemetryEvents = finiteNumber(fallbackStats.telemetry_events, 0);
   const cursorQuality = fallbackStats.cursor_quality || {};
   const nativeStats = nativeTelemetryStats(state.telemetry.native);
   const nativeQuality = nativeStats.quality || {};
@@ -4388,6 +4966,9 @@ function buildRenderQa({ cameraPlan, attentionTimeline, timelinePlan, metadata, 
       performanceAdaptiveLevel: state.performance.adaptiveLevel,
       attentionEvents,
       primaryAttentionEvents: finiteNumber(fallbackStats.primary_events, attentionEvents),
+      telemetryAttentionEvents: telemetryEvents,
+      telemetryAttentionStrategy: fallbackStats.telemetry_strategy || 'none',
+      telemetryAttentionSources: fallbackStats.telemetry_sources || {},
       fallbackAttentionEvents: fallbackEvents,
       fallbackStrategy: fallbackStats.fallback_strategy || 'none',
       cursorTelemetryQuality: cursorQuality,
@@ -4520,23 +5101,25 @@ function cameraFrameAt(cameraPlan, atMs) {
 function drawSmartTimelineFrame(settings, timelinePlan, atMs) {
   const sample = timelineSampleAt(timelinePlan.timeline, atMs);
   const cameraFrame = cameraFrameAt(timelinePlan.cameraPlan, atMs) || sample.frame;
-  const cursorUsable = timelinePlan.telemetryQuality?.cursor?.usable !== false;
+  const cursorTrack = timelinePlan.renderCursorTrack || timelinePlan.trail || [];
+  const cursorPoint = timelinePointAtTrack(cursorTrack, atMs) || sample.pointer || { x: 0.5, y: 0.5 };
+  const cursorUsable = timelinePlan.cursorLayerUsable !== false;
 
-  state.renderContext = { atMs, cursorUsable };
+  state.renderContext = { atMs, cursorUsable, cursorSource: cursorPoint.source || 'timeline' };
   state.frame = { ...cameraFrame };
   state.pointer = {
     ...state.pointer,
-    x: sample.pointer.x,
-    y: sample.pointer.y
+    x: cursorPoint.x,
+    y: cursorPoint.y
   };
-  state.keys = sample.keys || [];
+  state.keys = timelineKeysAt(timelinePlan.renderKeyboard, atMs) || sample.keys || [];
 
   drawVideoFrame(settings);
   drawPrivacyBlur(settings);
   if (cursorUsable) {
-    drawTimelineCursorTrail(settings, atMs, timelinePlan.trail);
+    drawTimelineCursorTrail(settings, atMs, cursorTrack);
     drawCursorSpotlight(settings);
-    drawTimelinePulses(settings, atMs, timelinePlan.pulses);
+    drawTimelinePulses(settings, atMs, timelinePlan.renderPulses || timelinePlan.pulses);
   }
   drawTimelineMarkerOverlay(settings, atMs, timelinePlan.markers);
   drawKeyboardOverlay(settings);
@@ -5614,6 +6197,7 @@ async function saveRecording() {
   };
   const cameraPlan = compileSmartDirectorPlan(timelinePlan, attentionTimeline, finalOutputSize);
   timelinePlan.cameraPlan = cameraPlan;
+  enhanceTimelinePlanEffects(timelinePlan);
   const renderQa = buildRenderQa({
     cameraPlan,
     attentionTimeline,
