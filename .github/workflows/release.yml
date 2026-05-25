@@ -45,6 +45,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run telemetry:windows:self-test
       - run: npm run release:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

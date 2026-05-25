@@ -12,6 +12,7 @@ const requiredFiles = [
   'src/styles.css',
   'src/renderer.js',
   'scripts/package.mjs',
+  'scripts/windows-telemetry-self-test.mjs',
   'native/windows/smartie-telemetry-helper.ps1',
   'LICENSE',
   'NOTICE',
@@ -46,7 +47,7 @@ if (!pkg.repository?.url || !pkg.bugs?.url || !pkg.homepage) {
   throw new Error('package.json must include repository, bugs, and homepage metadata');
 }
 
-for (const script of ['doctor', 'package:linux', 'package:win', 'package:all', 'release:linux', 'release:win', 'release:all', 'eval:telemetry', 'telemetry:adapter']) {
+for (const script of ['doctor', 'package:linux', 'package:win', 'package:all', 'release:linux', 'release:win', 'release:all', 'eval:telemetry', 'telemetry:adapter', 'telemetry:windows:self-test']) {
   if (!pkg.scripts || !pkg.scripts[script]) {
     throw new Error(`package.json is missing ${script} script`);
   }
@@ -296,9 +297,16 @@ for (const feature of ['NativeTelemetryCore', 'smartie.native_telemetry.snapshot
 }
 
 const windowsHelper = readFileSync(join(root, 'native/windows/smartie-telemetry-helper.ps1'), 'utf8');
-for (const feature of ['GetCursorPos', 'GetForegroundWindow', 'GetWindowRect', 'GetAsyncKeyState', 'text-redacted', 'windows-user32']) {
+for (const feature of ['GetCursorPos', 'GetForegroundWindow', 'GetWindowRect', 'GetAsyncKeyState', 'text-redacted', 'windows-user32', 'self-test']) {
   if (!windowsHelper.includes(feature)) {
     throw new Error(`Windows telemetry helper is missing feature: ${feature}`);
+  }
+}
+
+const windowsSelfTest = readFileSync(join(root, 'scripts/windows-telemetry-self-test.mjs'), 'utf8');
+for (const feature of ['-SelfTest', 'pointer_available', 'Windows telemetry helper self-test']) {
+  if (!windowsSelfTest.includes(feature)) {
+    throw new Error(`Windows telemetry self-test is missing feature: ${feature}`);
   }
 }
 

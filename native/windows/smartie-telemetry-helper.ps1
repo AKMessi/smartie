@@ -1,5 +1,6 @@
 param(
   [switch]$stdio,
+  [switch]$selfTest,
   [string]$protocol = "smartie.native_telemetry.helper.v1",
   [int]$intervalMs = 33
 )
@@ -164,6 +165,22 @@ Write-SmartieEvent @{
   type = "helper-ready"
   protocol = $protocol
   precision = "win32-user32-global"
+}
+
+if ($selfTest) {
+  $point = New-Object SmartieWin32Telemetry+POINT
+  $pointerAvailable = [SmartieWin32Telemetry]::GetCursorPos([ref]$point)
+  $window = Get-ForegroundWindowPayload
+  Write-SmartieEvent @{
+    type = "self-test"
+    protocol = $protocol
+    ok = $true
+    pointer_available = [bool]$pointerAvailable
+    pointer = $(if ($pointerAvailable) { @{ screen_x = [int]$point.X; screen_y = [int]$point.Y } } else { $null })
+    foreground_window_available = [bool]($null -ne $window)
+    foreground_window = $window
+  }
+  exit 0
 }
 
 while ($true) {

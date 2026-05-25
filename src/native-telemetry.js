@@ -422,7 +422,7 @@ class NativeTelemetryCore {
 
       return {
         command: shellCommand,
-        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, '--stdio', '--protocol', HELPER_PROTOCOL],
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, '-Stdio', '-Protocol', HELPER_PROTOCOL],
         path: helperPath
       };
     }

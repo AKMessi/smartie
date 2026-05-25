@@ -10,6 +10,7 @@
     "eval:director": "node scripts/eval-director.mjs",
     "eval:telemetry": "node scripts/eval-telemetry.mjs",
     "telemetry:adapter": "node scripts/telemetry-adapter.mjs",
+    "telemetry:windows:self-test": "node scripts/windows-telemetry-self-test.mjs",
     "doctor": "node scripts/doctor.mjs",
     "package:linux": "node scripts/package.mjs linux",
     "package:win": "node scripts/package.mjs win32",
